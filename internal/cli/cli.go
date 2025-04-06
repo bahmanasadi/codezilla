@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"codezilla/internal/tags"
-	"codezilla/pkg/fileutil"
+	"codezilla/pkg/fsutil"
 	"codezilla/pkg/logger"
 	"codezilla/pkg/style"
 )
@@ -12,22 +12,22 @@ import (
 // TagsCLI provides a command-line interface for working with ctags and files
 type TagsCLI struct {
 	tagIndex *tags.TagIndex
-	fileCtrl *fileutil.Controller
+	fileCtrl *fsutil.Controller
 }
 
 // New creates a new tags CLI
 func New() *TagsCLI {
 	logger.Debug("Creating new TagsCLI instance")
-	
+
 	// Create file controller with default config
-	fileCtrl := fileutil.NewController(fileutil.DefaultControllerConfig())
-	
+	fileCtrl := fsutil.NewController(fsutil.DefaultControllerConfig())
+
 	// Initialize the controller
 	err := fileCtrl.Initialize()
 	if err != nil {
 		logger.Error("Failed to initialize file controller", "error", err)
 	}
-	
+
 	return &TagsCLI{
 		tagIndex: tags.NewTagIndex(),
 		fileCtrl: fileCtrl,
@@ -37,7 +37,7 @@ func New() *TagsCLI {
 // PrintTagInfo prints detailed info about a tag
 func (cli *TagsCLI) PrintTagInfo(tagName string) {
 	logger.Debug("Retrieving tag info", "tag", tagName)
-	
+
 	tags := cli.tagIndex.GetTagsByName(tagName)
 	if len(tags) == 0 {
 		logger.Info("Tag not found", "tag", tagName)
@@ -47,7 +47,7 @@ func (cli *TagsCLI) PrintTagInfo(tagName string) {
 
 	logger.Info("Found tag entries", "tag", tagName, "count", len(tags))
 	fmt.Printf("%sFound %d entries for tag '%s':%s\n", style.Bold, len(tags), tagName, style.Reset)
-	
+
 	for i, tag := range tags {
 		fmt.Printf("%s[%d] %s%s\n", style.Bold, i+1, tag.Name, style.Reset)
 		fmt.Printf("  File: %s\n", tag.FilePath)
@@ -74,7 +74,7 @@ func (cli *TagsCLI) PrintTagInfo(tagName string) {
 // PrintTagsByFile prints all tags defined in a file
 func (cli *TagsCLI) PrintTagsByFile(filePath string) {
 	logger.Debug("Retrieving tags for file", "file", filePath)
-	
+
 	tags := cli.tagIndex.GetTagsByFile(filePath)
 	if len(tags) == 0 {
 		logger.Info("No tags found for file", "file", filePath)
@@ -84,7 +84,7 @@ func (cli *TagsCLI) PrintTagsByFile(filePath string) {
 
 	logger.Info("Found tags in file", "file", filePath, "count", len(tags))
 	fmt.Printf("%sFound %d tags in file '%s':%s\n", style.Bold, len(tags), filePath, style.Reset)
-	
+
 	for i, tag := range tags {
 		fmt.Printf("%s[%d] %s%s", style.Bold, i+1, tag.Name, style.Reset)
 		if tag.Kind != "" {
@@ -101,7 +101,7 @@ func (cli *TagsCLI) PrintTagsByFile(filePath string) {
 // PrintTagsByKind prints all tags of a specific kind
 func (cli *TagsCLI) PrintTagsByKind(kind string) {
 	logger.Debug("Retrieving tags by kind", "kind", kind)
-	
+
 	tags := cli.tagIndex.GetTagsByKind(kind)
 	if len(tags) == 0 {
 		logger.Info("No tags found of kind", "kind", kind)
@@ -111,7 +111,7 @@ func (cli *TagsCLI) PrintTagsByKind(kind string) {
 
 	logger.Info("Found tags of kind", "kind", kind, "count", len(tags))
 	fmt.Printf("%sFound %d tags of kind '%s':%s\n", style.Bold, len(tags), kind, style.Reset)
-	
+
 	for i, tag := range tags {
 		fmt.Printf("%s[%d] %s%s", style.Bold, i+1, tag.Name, style.Reset)
 		fmt.Printf(" in %s", tag.FilePath)

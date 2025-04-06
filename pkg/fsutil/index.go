@@ -1,4 +1,4 @@
-package fileutil
+package fsutil
 
 import (
 	"bufio"
@@ -24,11 +24,11 @@ type FileInfo struct {
 
 // FileIndex represents an index of files and their content
 type FileIndex struct {
-	Files       map[string]*FileInfo   // Map of file paths to file info
-	Extensions  map[string][]string    // Map of file extensions to file paths
-	Directories map[string][]string    // Map of directories to file paths
-	Keywords    map[string][]string    // Map of keywords to file paths
-	mu          sync.RWMutex           // Mutex for concurrent access
+	Files       map[string]*FileInfo // Map of file paths to file info
+	Extensions  map[string][]string  // Map of file extensions to file paths
+	Directories map[string][]string  // Map of directories to file paths
+	Keywords    map[string][]string  // Map of keywords to file paths
+	mu          sync.RWMutex         // Mutex for concurrent access
 }
 
 // NewFileIndex creates a new file index

@@ -1,4 +1,4 @@
-package fileutil
+package fsutil
 
 import (
 	"bufio"
@@ -166,11 +166,11 @@ func (c *Controller) SearchFiles(pattern string, isRegex bool, caseSensitive boo
 // PrintSearchResults prints search results
 func (c *Controller) PrintSearchResults(results []SearchResult) {
 	if len(results) == 0 {
-		fmt.Printf("%sNo matching files found%s\n", style.Red, style.Reset)
+		fmt.Printf("%sNo matching files found%s\r\n", style.Red, style.Reset)
 		return
 	}
 
-	fmt.Printf("%sFound %d matches:%s\n", style.Bold, len(results), style.Reset)
+	fmt.Printf("%sFound %d matches:%s\r\n", style.Bold, len(results), style.Reset)
 
 	// Group by file
 	fileGroups := make(map[string][]SearchResult)
@@ -180,15 +180,15 @@ func (c *Controller) PrintSearchResults(results []SearchResult) {
 
 	// Print results by file
 	for filePath, matches := range fileGroups {
-		fmt.Printf("\n%s%s%s (%d matches):\n", style.Bold, filePath, style.Reset, len(matches))
+		fmt.Printf("\r\n%s%s%s (%d matches):\r\n", style.Bold, filePath, style.Reset, len(matches))
 
 		for _, match := range matches {
 			// Print line number and content
-			fmt.Printf("%sLine %d:%s %s\n", style.Green, match.Line, style.Reset, match.Content)
+			fmt.Printf("%sLine %d:%s %s\r\n", style.Green, match.Line, style.Reset, match.Content)
 
 			// Print context lines
 			if len(match.Context) > 0 {
-				fmt.Printf("%sContext:%s\n", style.Blue, style.Reset)
+				fmt.Printf("%sContext:%s\r\n", style.Blue, style.Reset)
 				for i, context := range match.Context {
 					// Determine line number for context line
 					contextLine := match.Line
@@ -197,7 +197,7 @@ func (c *Controller) PrintSearchResults(results []SearchResult) {
 					} else {
 						contextLine = match.Line + (i - len(match.Context)/2 + 1)
 					}
-					fmt.Printf("  %d: %s\n", contextLine, context)
+					fmt.Printf("  %d: %s\r\n", contextLine, context)
 				}
 			}
 
@@ -215,26 +215,26 @@ func (c *Controller) GetFileStats() map[string]interface{} {
 func (c *Controller) PrintFileStats() {
 	stats := c.GetFileStats()
 
-	fmt.Printf("%sFile Index Statistics:%s\n", style.Bold, style.Reset)
-	fmt.Printf("Total files: %d\n", stats["totalFiles"])
-	fmt.Printf("Total lines: %d\n", stats["totalLines"])
-	fmt.Printf("Total size: %s\n", formatSize(stats["totalSize"].(int64)))
-	fmt.Printf("Directories: %d\n", stats["directoriesCount"])
-	fmt.Printf("Extensions: %d\n", stats["extensionsCount"])
-	fmt.Printf("Keywords indexed: %d\n", stats["keywordsIndexed"])
+	fmt.Printf("%sFile Index Statistics:%s\r\n", style.Bold, style.Reset)
+	fmt.Printf("Total files: %d\r\n", stats["totalFiles"])
+	fmt.Printf("Total lines: %d\r\n", stats["totalLines"])
+	fmt.Printf("Total size: %s\r\n", formatSize(stats["totalSize"].(int64)))
+	fmt.Printf("Directories: %d\r\n", stats["directoriesCount"])
+	fmt.Printf("Extensions: %d\r\n", stats["extensionsCount"])
+	fmt.Printf("Keywords indexed: %d\r\n", stats["keywordsIndexed"])
 
 	// Print indexing status
 	if stats["isIndexing"].(bool) {
-		fmt.Printf("%sIndexing is in progress%s\n", style.Green, style.Reset)
+		fmt.Printf("%sIndexing is in progress%s\r\n", style.Green, style.Reset)
 	} else {
-		fmt.Printf("%sIndexing is complete%s\n", style.Green, style.Reset)
+		fmt.Printf("%sIndexing is complete%s\r\n", style.Green, style.Reset)
 	}
 
 	// Print extension stats
 	if extCounts, ok := stats["extensionCounts"].(map[string]int); ok && len(extCounts) > 0 {
-		fmt.Printf("\n%sFiles by extension:%s\n", style.Bold, style.Reset)
+		fmt.Printf("\r\n%sFiles by extension:%s\r\n", style.Bold, style.Reset)
 		for ext, count := range extCounts {
-			fmt.Printf("  %s: %d\n", ext, count)
+			fmt.Printf("  %s: %d\r\n", ext, count)
 		}
 	}
 }
@@ -268,14 +268,14 @@ func (c *Controller) PrintFilesByExtension(extension string) {
 	files := c.FindFilesByExtension(extension)
 
 	if len(files) == 0 {
-		fmt.Printf("%sNo files found with extension '%s'%s\n", style.Red, extension, style.Reset)
+		fmt.Printf("%sNo files found with extension '%s'%s\r\n", style.Red, extension, style.Reset)
 		return
 	}
 
-	fmt.Printf("%sFound %d files with extension '%s':%s\n", style.Bold, len(files), extension, style.Reset)
+	fmt.Printf("%sFound %d files with extension '%s':%s\r\n", style.Bold, len(files), extension, style.Reset)
 
 	for i, file := range files {
-		fmt.Printf("[%d] %s\n", i+1, file)
+		fmt.Printf("[%d] %s\r\n", i+1, file)
 	}
 }
 
@@ -289,14 +289,14 @@ func (c *Controller) PrintFilesByKeyword(keyword string) {
 	files := c.FindFilesByKeyword(keyword)
 
 	if len(files) == 0 {
-		fmt.Printf("%sNo files found containing '%s'%s\n", style.Red, keyword, style.Reset)
+		fmt.Printf("%sNo files found containing '%s'%s\r\n", style.Red, keyword, style.Reset)
 		return
 	}
 
-	fmt.Printf("%sFound %d files containing '%s':%s\n", style.Bold, len(files), keyword, style.Reset)
+	fmt.Printf("%sFound %d files containing '%s':%s\r\n", style.Bold, len(files), keyword, style.Reset)
 
 	for i, file := range files {
-		fmt.Printf("[%d] %s\n", i+1, file)
+		fmt.Printf("[%d] %s\r\n", i+1, file)
 	}
 }
 

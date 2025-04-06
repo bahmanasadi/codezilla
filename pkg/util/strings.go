@@ -13,11 +13,11 @@ func SplitKV(s, sep string) (string, string) {
 	if !strings.Contains(s, sep) {
 		return s, ""
 	}
-	
+
 	parts := strings.SplitN(s, sep, 2)
 	if len(parts) == 2 {
 		return parts[0], parts[1]
 	}
-	
+
 	return s, ""
 }

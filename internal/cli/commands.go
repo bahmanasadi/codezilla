@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"codezilla/pkg/fsutil"
 	"fmt"
 	"strings"
 
@@ -12,14 +13,14 @@ import (
 // LoadTagsFile loads a ctags file
 func (cli *TagsCLI) LoadTagsFile(path string) error {
 	// Handle relative paths
-	resolvedPath, err := util.ResolvePath(path)
+	resolvedPath, err := fsutil.ResolvePath(path)
 	if err != nil {
 		logger.Error("Failed to resolve path", "path", path, "error", err)
 		return err
 	}
 
 	logger.Info("Loading tags file", "path", resolvedPath)
-	
+
 	// Load tags file
 	fmt.Printf("Loading tags from %s...\n", resolvedPath)
 	err = cli.tagIndex.LoadTags(resolvedPath)
@@ -33,11 +34,11 @@ func (cli *TagsCLI) LoadTagsFile(path string) error {
 	fileCount := cli.tagIndex.CountFiles()
 	kindCount := cli.tagIndex.CountKinds()
 
-	logger.Info("Successfully loaded tags", 
-		"tag_count", tagCount, 
-		"file_count", fileCount, 
+	logger.Info("Successfully loaded tags",
+		"tag_count", tagCount,
+		"file_count", fileCount,
 		"kind_count", kindCount)
-	
+
 	// Print summary
 	fmt.Printf("%sSuccessfully loaded tags%s\n", style.Green, style.Reset)
 	fmt.Printf("Total unique tag names: %d\n", tagCount)
@@ -49,7 +50,7 @@ func (cli *TagsCLI) LoadTagsFile(path string) error {
 // PrintAvailableKinds prints all available tag kinds
 func (cli *TagsCLI) PrintAvailableKinds() {
 	logger.Debug("Retrieving available kinds")
-	
+
 	kinds := cli.tagIndex.GetAvailableKinds()
 	if len(kinds) == 0 {
 		logger.Info("No kinds available")
@@ -72,7 +73,7 @@ func (cli *TagsCLI) FileSearchCommand(pattern string, isRegex bool, caseSensitiv
 	if err != nil {
 		return err
 	}
-	
+
 	// Print results
 	cli.fileCtrl.PrintSearchResults(results)
 	return nil
@@ -166,14 +167,14 @@ func (cli *TagsCLI) RunTagsCommand(command string) error {
 // PrintHelp prints available commands
 func (cli *TagsCLI) PrintHelp() {
 	logger.Debug("Displaying help")
-	
+
 	fmt.Println("\nCtags Commands:")
 	fmt.Println("  <tags_file>   - Load a ctags file")
 	fmt.Println("  tag:<n>       - Show info for a specific tag")
 	fmt.Println("  file:<path>   - Show all tags in a file")
 	fmt.Println("  kind:<kind>   - Show all tags of a specific kind")
 	fmt.Println("  kinds         - List all available kinds")
-	
+
 	fmt.Println("\nFile Utility Commands:")
 	fmt.Println("  search:<text> - Search for files containing text")
 	fmt.Println("  regex:<expr>  - Search for files using regex")

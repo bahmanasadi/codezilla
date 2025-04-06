@@ -1,4 +1,4 @@
-package fileutil
+package fsutil
 
 import (
 	"bufio"
@@ -28,17 +28,17 @@ type SearchOptions struct {
 
 // SearchResult represents a search result
 type SearchResult struct {
-	FilePath string   // Path to the file
-	Line     int      // Line number
-	Content  string   // Line content
-	Context  []string // Context lines
-	MatchStart int    // Start position of match in line
-	MatchEnd   int    // End position of match in line
+	FilePath   string   // Path to the file
+	Line       int      // Line number
+	Content    string   // Line content
+	Context    []string // Context lines
+	MatchStart int      // Start position of match in line
+	MatchEnd   int      // End position of match in line
 }
 
 // Search searches for a pattern in files
 func Search(options SearchOptions) ([]SearchResult, error) {
-	logger.Info("Searching for files", 
+	logger.Info("Searching for files",
 		"pattern", options.Pattern,
 		"regex", options.IsRegex,
 		"case_sensitive", options.CaseSensitive)
@@ -49,7 +49,7 @@ func Search(options SearchOptions) ([]SearchResult, error) {
 	var jobChan = make(chan string)
 	var errorsChan = make(chan error)
 	var done = make(chan struct{})
-	
+
 	// Prepare regex if needed
 	var re *regexp.Regexp
 	var err error
