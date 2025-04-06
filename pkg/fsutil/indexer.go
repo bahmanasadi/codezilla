@@ -1,4 +1,4 @@
-package fileutil
+package fsutil
 
 import (
 	"fmt"
@@ -12,24 +12,24 @@ import (
 
 // IndexConfig holds configuration for file indexing
 type IndexConfig struct {
-	Directories     []string   // Directories to index
-	Recursive       bool       // Whether to index subdirectories
-	IgnorePatterns  []string   // Patterns to ignore
-	KeywordsToIndex []string   // Keywords to index
-	MaxFileSize     int64      // Maximum file size to index (bytes)
-	ExcludeExts     []string   // Extensions to exclude
-	IncludeExts     []string   // Extensions to include (empty = all)
-	ParallelJobs    int        // Number of parallel indexing jobs
+	Directories     []string      // Directories to index
+	Recursive       bool          // Whether to index subdirectories
+	IgnorePatterns  []string      // Patterns to ignore
+	KeywordsToIndex []string      // Keywords to index
+	MaxFileSize     int64         // Maximum file size to index (bytes)
+	ExcludeExts     []string      // Extensions to exclude
+	IncludeExts     []string      // Extensions to include (empty = all)
+	ParallelJobs    int           // Number of parallel indexing jobs
 	UpdateInterval  time.Duration // Interval for auto-updating the index
 }
 
 // Indexer manages the file indexing process
 type Indexer struct {
-	Config        IndexConfig // Indexing configuration
-	Index         *FileIndex  // The file index
+	Config        IndexConfig   // Indexing configuration
+	Index         *FileIndex    // The file index
 	stopChan      chan struct{} // Channel to stop background indexing
-	indexingMutex sync.Mutex // Mutex for indexing operations
-	isIndexing    bool       // Whether indexing is in progress
+	indexingMutex sync.Mutex    // Mutex for indexing operations
+	isIndexing    bool          // Whether indexing is in progress
 }
 
 // NewIndexer creates a new file indexer
@@ -44,9 +44,9 @@ func NewIndexer(config IndexConfig) *Indexer {
 	}
 
 	return &Indexer{
-		Config:    config,
-		Index:     NewFileIndex(),
-		stopChan:  make(chan struct{}),
+		Config:     config,
+		Index:      NewFileIndex(),
+		stopChan:   make(chan struct{}),
 		isIndexing: false,
 	}
 }
@@ -60,7 +60,7 @@ func (indexer *Indexer) StartIndexing() error {
 		return fmt.Errorf("indexing is already in progress")
 	}
 
-	logger.Info("Starting file indexing", 
+	logger.Info("Starting file indexing",
 		"directories", indexer.Config.Directories,
 		"recursive", indexer.Config.Recursive)
 
@@ -72,7 +72,7 @@ func (indexer *Indexer) StartIndexing() error {
 			indexer.indexingMutex.Lock()
 			indexer.isIndexing = false
 			indexer.indexingMutex.Unlock()
-			
+
 			logger.Info("Indexing completed")
 		}()
 
@@ -157,12 +157,12 @@ func (indexer *Indexer) IsIndexingInProgress() bool {
 // GetIndexStats returns statistics about the index
 func (indexer *Indexer) GetIndexStats() map[string]interface{} {
 	stats := indexer.Index.GetStats()
-	
+
 	// Add additional indexer stats
 	stats["isIndexing"] = indexer.IsIndexingInProgress()
 	stats["directoriesConfigured"] = len(indexer.Config.Directories)
 	stats["keywordsConfigured"] = len(indexer.Config.KeywordsToIndex)
-	
+
 	return stats
 }
 
@@ -245,7 +245,7 @@ func (indexer *Indexer) SearchByPath(path string) *FileInfo {
 		if err != nil {
 			return nil
 		}
-		
+
 		// Check again
 		fileInfo, ok = indexer.Index.Files[path]
 		if !ok {
