@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,7 +13,7 @@ import (
 	"github.com/sergi/go-diff/diffmatchpatch"
 	"golang.org/x/term"
 
-	"codezilla/internal/agent"
+	"codezilla/internal/cli"
 	"codezilla/pkg/fsutil"
 	"codezilla/pkg/logger"
 	"codezilla/pkg/style"
@@ -22,21 +21,6 @@ import (
 
 // runPlayground starts the terminal file exploration playground
 func main() {
-	model := "qwen2.5-coder:3b" // Default model
-
-	fmt.Printf("%sEntering Ollama LLM Agent Shell (model: %s)%s\r\n", style.Bold, model, style.Reset)
-	fmt.Printf("Powered by local Ollama models with additional LLM capabilities\r\n")
-	fmt.Printf("Use 'help' to see available commands\r\n")
-
-	// Create agent with Ollama executor (using default localhost URL)
-	executor := agent.NewOllamaExecutor(model, "http://localhost:11434")
-	agentInstance := agent.New(executor)
-	agentInstance.SetMaxSteps(50) // Allow more steps for LLM-based agents
-
-	// Run interactive agent shell
-	runAgentShell(agentInstance)
-
-	return
 	// Initialize logger
 	err := logger.Setup(logger.Config{
 		Level:    slog.LevelDebug,
@@ -264,8 +248,6 @@ func printHelp() {
 	fmt.Printf("  %sdiff <file1> <file2>%s - Show differences between two files\r\n", style.Yellow, style.Reset)
 	fmt.Printf("  %sagent%s - Enter agent shell\r\n", style.Yellow, style.Reset)
 	fmt.Printf("  %sagent:advanced%s - Enter advanced agent shell\r\n", style.Yellow, style.Reset)
-	fmt.Printf("  %sagent:ollama [model]%s - Enter Ollama LLM-powered agent shell\r\n", style.Yellow, style.Reset)
-	fmt.Printf("  %sagent:auto [model]%s - Enter autonomous LLM agent shell\r\n", style.Yellow, style.Reset)
 	fmt.Printf("  %shelp%s - Show this help\r\n", style.Yellow, style.Reset)
 	fmt.Printf("  %squit%s - Exit the playground\r\n", style.Yellow, style.Reset)
 	fmt.Printf("\r\n")
@@ -422,63 +404,22 @@ func processCommand(cmd string, controller *fsutil.Controller) {
 		fmt.Printf("%sEntering Agent Shell%s\r\n", style.Bold, style.Reset)
 		fmt.Printf("Use 'help' to see available commands\r\n")
 
-		// Create agent with standard executor
-		executor := agent.NewBasicExecutor()
-		agentInstance := agent.New(executor)
-		agentInstance.SetMaxSteps(20)
+		// Create CLI with standard agent
+		tagsCLI := cli.New()
 
 		// Run interactive agent shell
-		runAgentShell(agentInstance)
+		runAgentShell(tagsCLI)
 
 	case "agent:advanced":
 		fmt.Printf("%sEntering Advanced Agent Shell%s\r\n", style.Bold, style.Reset)
 		fmt.Printf("Enhanced with memory and chaining capabilities\r\n")
 		fmt.Printf("Use 'help' to see available commands\r\n")
 
-		// Create agent with advanced executor
-		executor := agent.NewAdvancedExecutor()
-		agentInstance := agent.New(executor)
-		agentInstance.SetMaxSteps(20)
+		// Create CLI with advanced agent
+		tagsCLI := cli.NewWithAdvancedAgent()
 
 		// Run interactive agent shell
-		runAgentShell(agentInstance)
-
-	case "agent:ollama":
-		model := "llama3" // Default model
-		if args != "" {
-			model = args
-		}
-
-		fmt.Printf("%sEntering Ollama LLM Agent Shell (model: %s)%s\r\n", style.Bold, model, style.Reset)
-		fmt.Printf("Powered by local Ollama models with additional LLM capabilities\r\n")
-		fmt.Printf("Use 'help' to see available commands\r\n")
-
-		// Create agent with Ollama executor (using default localhost URL)
-		executor := agent.NewOllamaExecutor(model, "http://localhost:11434")
-		agentInstance := agent.New(executor)
-		agentInstance.SetMaxSteps(50) // Allow more steps for LLM-based agents
-
-		// Run interactive agent shell
-		runAgentShell(agentInstance)
-
-	case "agent:auto":
-		model := "qwen2.5-coder:3b" // Default model that's good at coding tasks
-		if args != "" {
-			model = args
-		}
-
-		fmt.Printf("%sEntering Autonomous Agent Shell (model: %s)%s\r\n", style.Bold, model, style.Reset)
-		fmt.Printf("Powered by LLM with autonomous reasoning and tool selection\r\n")
-		fmt.Printf("This agent automatically selects the best tools for your query\r\n")
-		fmt.Printf("Just type your query and the agent will handle the rest\r\n")
-
-		// Create auto agent with Ollama executor
-		executor := agent.NewOllamaExecutor(model, "http://localhost:11434")
-		autoAgent := agent.NewAutoAgent(executor)
-		autoAgent.MaxIterations = 20 // Allow reasonable number of iterations
-
-		// Run interactive auto agent shell
-		runAutoAgentShell(autoAgent)
+		runAgentShell(tagsCLI)
 
 	case "cat":
 		if args == "" {
@@ -560,7 +501,7 @@ func processCommand(cmd string, controller *fsutil.Controller) {
 }
 
 // runAgentShell runs an interactive agent shell
-func runAgentShell(agentInstance *agent.Agent) {
+func runAgentShell(tagsCLI *cli.TagsCLI) {
 	var input string
 	var exitShell bool
 
@@ -575,17 +516,7 @@ func runAgentShell(agentInstance *agent.Agent) {
 
 	for !exitShell {
 		fmt.Printf("%sAgent> %s", style.Cyan, style.Reset)
-
-		// Use a scanner to read the entire line including spaces and pipe characters
-		scanner := bufio.NewScanner(os.Stdin)
-		if scanner.Scan() {
-			input = scanner.Text()
-		} else {
-			if err := scanner.Err(); err != nil {
-				fmt.Printf("%sError reading input: %s%s\n", style.Red, err.Error(), style.Reset)
-			}
-			continue
-		}
+		fmt.Scanln(&input)
 
 		if input == "" {
 			continue
@@ -601,27 +532,13 @@ func runAgentShell(agentInstance *agent.Agent) {
 
 		switch command {
 		case "list":
-			actions := agentInstance.Executor.GetAvailableActions()
-
-			fmt.Printf("%sAvailable Agent Actions:%s\n", style.Bold, style.Reset)
-			for i, action := range actions {
-				fmt.Printf("%d. %s\n", i+1, action)
-			}
+			tagsCLI.RunAgentCommand("list")
 
 		case "history":
-			history := agentInstance.GetHistory()
-
-			if history == "" {
-				fmt.Println("No agent execution history available.")
-				continue
-			}
-
-			fmt.Printf("%sAgent Execution History:%s\n", style.Bold, style.Reset)
-			fmt.Println(history)
+			tagsCLI.RunAgentCommand("history")
 
 		case "reset":
-			agentInstance.Reset()
-			fmt.Println("Agent history has been reset.")
+			tagsCLI.RunAgentCommand("reset")
 
 		case "run":
 			if args == "" {
@@ -629,31 +546,7 @@ func runAgentShell(agentInstance *agent.Agent) {
 				fmt.Println("Usage: run <thought>|<action>|<input>")
 				break
 			}
-
-			// Parse the input as thought|action|input
-			runParts := strings.Split(args, "|")
-			if len(runParts) < 2 {
-				fmt.Printf("%sError: Invalid format, expected thought|action|input%s\r\n", style.Red, style.Reset)
-				break
-			}
-
-			thought := runParts[0]
-			action := runParts[1]
-			actionInput := ""
-
-			if len(runParts) > 2 {
-				actionInput = runParts[2]
-			}
-
-			// Execute the agent step
-			result, err := agentInstance.Execute(thought, action, actionInput)
-			if err != nil {
-				fmt.Printf("%sAgent execution failed: %s%s\n", style.Red, err.Error(), style.Reset)
-				continue
-			}
-
-			fmt.Printf("%sAgent Execuœtion Result:%s\n", style.Bold, style.Reset)
-			fmt.Println(result)
+			tagsCLI.RunAgentCommand("run:" + args)
 
 		case "help":
 			fmt.Printf("%sAgent Commands:%s\r\n", style.Bold, style.Reset)
@@ -671,130 +564,6 @@ func runAgentShell(agentInstance *agent.Agent) {
 		default:
 			fmt.Printf("%sUnknown command: %s%s\r\n", style.Red, command, style.Reset)
 			fmt.Println("Type 'help' for a list of commands")
-		}
-
-		fmt.Println() // Add newline after command output
-	}
-}
-
-// runAutoAgentShell runs an interactive shell for the autonomous agent
-func runAutoAgentShell(autoAgent *agent.AutoAgent) {
-	var input string
-	var exitShell bool
-
-	fmt.Printf("%sAutonomous Agent Commands:%s\r\n", style.Bold, style.Reset)
-	fmt.Printf("  %squery <your question>%s - Ask the agent to solve a problem\r\n", style.Yellow, style.Reset)
-	fmt.Printf("  %shistory%s - Show execution history\r\n", style.Yellow, style.Reset)
-	fmt.Printf("  %sreset%s - Reset agent history\r\n", style.Yellow, style.Reset)
-	fmt.Printf("  %stools%s - List available tools\r\n", style.Yellow, style.Reset)
-	fmt.Printf("  %shelp%s - Show this help\r\n", style.Yellow, style.Reset)
-	fmt.Printf("  %sexit%s - Exit agent shell\r\n", style.Yellow, style.Reset)
-	fmt.Printf("\r\n")
-	fmt.Printf("Type your query directly to let the agent handle it automatically\r\n")
-	fmt.Printf("\r\n")
-
-	for !exitShell {
-		fmt.Printf("%sAuto> %s", style.Cyan, style.Reset)
-
-		// Use a scanner to read the entire line
-		scanner := bufio.NewScanner(os.Stdin)
-		if scanner.Scan() {
-			input = scanner.Text()
-		} else {
-			if err := scanner.Err(); err != nil {
-				fmt.Printf("%sError reading input: %s%s\n", style.Red, err.Error(), style.Reset)
-			}
-			continue
-		}
-
-		if input == "" {
-			continue
-		}
-
-		// Check if it's a command (starts with a command word) or a direct query
-		parts := strings.SplitN(input, " ", 2)
-		command := strings.ToLower(parts[0])
-		args := ""
-		if len(parts) > 1 {
-			args = parts[1]
-		}
-
-		switch command {
-		case "query":
-			if args == "" {
-				fmt.Printf("%sError: Missing query%s\r\n", style.Red, style.Reset)
-				fmt.Println("Usage: query <your question>")
-				break
-			}
-
-			fmt.Printf("%sProcessing query, please wait...%s\n", style.Bold, style.Reset)
-			result, err := autoAgent.ProcessQuery(args)
-			if err != nil {
-				fmt.Printf("%sError processing query: %s%s\n", style.Red, err.Error(), style.Reset)
-				continue
-			}
-
-			fmt.Printf("%sAgent Response:%s\n", style.Bold, style.Reset)
-			fmt.Println(result)
-
-		case "history":
-			history := autoAgent.GetHistory()
-			if history == "" {
-				fmt.Println("No agent execution history available.")
-				continue
-			}
-
-			fmt.Printf("%sAgent Execution History:%s\n", style.Bold, style.Reset)
-			fmt.Println(history)
-
-		case "summary":
-			summary := autoAgent.GetSummary()
-			if summary == "" {
-				fmt.Println("No agent processing summary available.")
-				continue
-			}
-
-			fmt.Printf("%sAgent Processing Summary:%s\n", style.Bold, style.Reset)
-			fmt.Println(summary)
-
-		case "reset":
-			autoAgent.Reset()
-			fmt.Println("Agent history has been reset.")
-
-		case "tools":
-			actions := autoAgent.Executor.GetAvailableActions()
-
-			fmt.Printf("%sAvailable Agent Tools:%s\n", style.Bold, style.Reset)
-			for i, action := range actions {
-				fmt.Printf("%d. %s\n", i+1, action)
-			}
-
-		case "help":
-			fmt.Printf("%sAutonomous Agent Commands:%s\r\n", style.Bold, style.Reset)
-			fmt.Printf("  %squery <your question>%s - Ask the agent to solve a problem\r\n", style.Yellow, style.Reset)
-			fmt.Printf("  %shistory%s - Show execution history\r\n", style.Yellow, style.Reset)
-			fmt.Printf("  %ssummary%s - Show processing summary\r\n", style.Yellow, style.Reset)
-			fmt.Printf("  %sreset%s - Reset agent history\r\n", style.Yellow, style.Reset)
-			fmt.Printf("  %stools%s - List available tools\r\n", style.Yellow, style.Reset)
-			fmt.Printf("  %shelp%s - Show this help\r\n", style.Yellow, style.Reset)
-			fmt.Printf("  %sexit%s - Exit agent shell\r\n", style.Yellow, style.Reset)
-			fmt.Printf("Type your query directly to let the agent handle it automatically\r\n")
-
-		case "exit", "quit":
-			exitShell = true
-			fmt.Println("Exiting autonomous agent shell")
-
-		default:
-			// If not a recognized command, treat the whole input as a query
-			fmt.Printf("%sProcessing query, please wait...%s\n", style.Bold, style.Reset)
-			result, err := autoAgent.ProcessQuery(input)
-			if err != nil {
-				fmt.Printf("%sError processing query: %s%s\n", style.Red, err.Error(), style.Reset)
-				continue
-			}
-
-			fmt.Printf("%sAgent Response:%s\n", style.Bold, style.Reset)
-			fmt.Println(result)
 		}
 
 		fmt.Println() // Add newline after command output
