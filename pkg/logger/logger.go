@@ -1,272 +1,155 @@
 package logger
 
 import (
-	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
-// Config holds the logger configuration
+// Logger wraps slog.Logger with additional functionality
+type Logger struct {
+	slogger *slog.Logger
+	level   slog.Level
+	silent  bool
+	writer  io.Writer
+	file    *os.File
+}
+
+// Config contains logger configuration
 type Config struct {
-	Level      slog.Level
-	FilePath   string
-	JSONFormat bool
-	Silent     bool // If true, suppresses logs to stderr when no file is specified
+	LogFile  string
+	LogLevel string
+	Silent   bool
 }
 
-var (
-	defaultConfig = Config{
-		Level:      slog.LevelInfo,
-		FilePath:   "",
-		JSONFormat: false,
-		Silent:     false,
-	}
+// LogLevel represents logging levels
+type LogLevel string
 
-	logFile *os.File
-	logger  *slog.Logger
-	mu      sync.Mutex
+const (
+	// Log levels
+	LevelDebug LogLevel = "debug"
+	LevelInfo  LogLevel = "info"
+	LevelWarn  LogLevel = "warn"
+	LevelError LogLevel = "error"
 )
 
-// nullWriter is an io.Writer that discards all writes
-type nullWriter struct{}
-
-func (nw nullWriter) Write(p []byte) (n int, err error) {
-	return len(p), nil // pretend we wrote everything successfully
-}
-
-// Setup initializes the logging system with the provided configuration
-func Setup(cfg Config) error {
-	mu.Lock()
-	defer mu.Unlock()
-
-	// Close any existing log file
-	if logFile != nil {
-		if err := logFile.Close(); err != nil {
-			return fmt.Errorf("failed to close previous log file: %w", err)
-		}
-		logFile = nil
+// New creates a new Logger instance
+func New(config Config) (*Logger, error) {
+	level := slog.LevelInfo
+	switch LogLevel(config.LogLevel) {
+	case LevelDebug:
+		level = slog.LevelDebug
+	case LevelInfo:
+		level = slog.LevelInfo
+	case LevelWarn:
+		level = slog.LevelWarn
+	case LevelError:
+		level = slog.LevelError
 	}
 
+	// Create a writer for logs
 	var writer io.Writer
+	var file *os.File
 
-	// If FilePath is specified, use file for logging
-	if cfg.FilePath != "" {
+	if config.LogFile != "" {
 		// Ensure directory exists
-		dir := filepath.Dir(cfg.FilePath)
+		dir := filepath.Dir(config.LogFile)
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("failed to create log directory: %w", err)
+			return nil, err
 		}
 
-		// Open log file
-		file, err := os.OpenFile(cfg.FilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		var err error
+		file, err = os.OpenFile(config.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
-			return fmt.Errorf("failed to open log file: %w", err)
+			return nil, err
 		}
 
+		// Always write to file only
 		writer = file
-		logFile = file
-	} else if cfg.Silent {
-		// Use null writer if silent mode is requested
-		writer = nullWriter{}
 	} else {
-		// Default to stderr only if no file is specified and not in silent mode
-		writer = os.Stderr
+		// If no log file specified and not silent, use stdout
+		if !config.Silent {
+			writer = os.Stdout
+		} else {
+			// Use a discard writer if silent and no log file
+			writer = io.Discard
+		}
 	}
 
-	// Create handler based on format preference
-	var handler slog.Handler
-	if cfg.JSONFormat {
-		handler = slog.NewJSONHandler(writer, &slog.HandlerOptions{
-			Level: cfg.Level,
-		})
-	} else {
-		handler = slog.NewTextHandler(writer, &slog.HandlerOptions{
-			Level: cfg.Level,
-		})
-	}
-
-	// Create the logger
-	logger = slog.New(handler)
-	slog.SetDefault(logger)
-
-	// Only log initialization if we're not using a null writer
-	if _, isNull := writer.(nullWriter); !isNull {
-		logger.Info("Logger initialized",
-			"level", cfg.Level.String(),
-			"file", cfg.FilePath,
-			"format", map[bool]string{true: "JSON", false: "Text"}[cfg.JSONFormat],
-		)
-	}
-
-	return nil
-}
-
-// SetupDefault initializes the logging system with default configuration
-func SetupDefault() {
-	if err := Setup(defaultConfig); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to setup default logger: %v\n", err)
-	}
-}
-
-// SetupFile configures logging to write only to the specified file
-func SetupFile(filePath string, level slog.Level, jsonFormat bool) error {
-	return Setup(Config{
-		Level:      level,
-		FilePath:   filePath,
-		JSONFormat: jsonFormat,
-		Silent:     true, // Suppress stderr output
+	// Create JSON handler with timestamp
+	handler := slog.NewJSONHandler(writer, &slog.HandlerOptions{
+		Level: level,
 	})
+
+	return &Logger{
+		slogger: slog.New(handler),
+		level:   level,
+		silent:  config.Silent,
+		writer:  writer,
+		file:    file,
+	}, nil
+}
+
+// Close closes the logger file if it exists
+func (l *Logger) Close() error {
+	if l.file != nil {
+		return l.file.Close()
+	}
+	return nil
 }
 
 // Debug logs a debug message
-func Debug(msg string, args ...any) {
-	ensureLoggerInitialized()
-	logger.Debug(msg, args...)
+func (l *Logger) Debug(msg string, args ...any) {
+	l.slogger.Debug(msg, args...)
 }
 
 // Info logs an info message
-func Info(msg string, args ...any) {
-	ensureLoggerInitialized()
-	logger.Info(msg, args...)
+func (l *Logger) Info(msg string, args ...any) {
+	l.slogger.Info(msg, args...)
 }
 
 // Warn logs a warning message
-func Warn(msg string, args ...any) {
-	ensureLoggerInitialized()
-	logger.Warn(msg, args...)
+func (l *Logger) Warn(msg string, args ...any) {
+	l.slogger.Warn(msg, args...)
 }
 
 // Error logs an error message
-func Error(msg string, args ...any) {
-	ensureLoggerInitialized()
-	logger.Error(msg, args...)
+func (l *Logger) Error(msg string, args ...any) {
+	l.slogger.Error(msg, args...)
 }
 
-// LogWithContext logs a message with context
-func LogWithContext(ctx context.Context, level slog.Level, msg string, args ...any) {
-	ensureLoggerInitialized()
-	logger.Log(ctx, level, msg, args...)
+// With returns a new Logger with the given attributes added to each log entry
+func (l *Logger) With(args ...any) *Logger {
+	return &Logger{
+		slogger: l.slogger.With(args...),
+		level:   l.level,
+		silent:  l.silent,
+		writer:  l.writer,
+		file:    l.file,
+	}
 }
 
-// GetLogger returns the current logger instance
-func GetLogger() *slog.Logger {
-	ensureLoggerInitialized()
-	return logger
+// WithGroup returns a new Logger with the given group added to each log entry
+func (l *Logger) WithGroup(name string) *Logger {
+	return &Logger{
+		slogger: l.slogger.WithGroup(name),
+		level:   l.level,
+		silent:  l.silent,
+		writer:  l.writer,
+		file:    l.file,
+	}
 }
 
-// Close closes the logger resources, particularly the log file if one is open
-func Close() error {
-	mu.Lock()
-	defer mu.Unlock()
+// DefaultLogger creates a basic logger that writes to stdout
+func DefaultLogger() *Logger {
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})
 
-	if logFile != nil {
-		return logFile.Close()
-	}
-	return nil
-}
-
-// ChangeLogFile changes the log file while preserving the current logger's settings
-func ChangeLogFile(filePath string, silent bool) error {
-	mu.Lock()
-	defer mu.Unlock()
-
-	// If no logger exists yet, just set up with defaults
-	if logger == nil {
-		cfg := defaultConfig
-		cfg.FilePath = filePath
-		cfg.Silent = silent
-		return Setup(cfg)
-	}
-
-	// Get the current handler to determine format and level
-	var isJSON bool
-	var level slog.Level
-
-	oldHandler := logger.Handler()
-	if jsonHandler, ok := oldHandler.(*slog.JSONHandler); ok {
-		isJSON = true
-		level = slog.LevelDebug
-		jsonHandler.Enabled(context.Background(), level)
-	} else if textHandler, ok := oldHandler.(*slog.TextHandler); ok {
-		isJSON = false
-		level = slog.LevelDebug
-		textHandler.Enabled(context.Background(), level)
-	} else {
-		// Default values if we can't determine
-		isJSON = false
-		level = slog.LevelInfo
-	}
-
-	// Close any existing log file
-	if logFile != nil {
-		if err := logFile.Close(); err != nil {
-			return fmt.Errorf("failed to close previous log file: %w", err)
-		}
-		logFile = nil
-	}
-
-	// Determine writer based on file path and silent flag
-	var writer io.Writer
-
-	if filePath != "" {
-		// Ensure directory exists
-		dir := filepath.Dir(filePath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("failed to create log directory: %w", err)
-		}
-
-		// Open log file
-		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to open log file: %w", err)
-		}
-
-		writer = file
-		logFile = file
-	} else if silent {
-		writer = nullWriter{}
-	} else {
-		writer = os.Stderr
-	}
-
-	// Create handler with same format as before
-	var handler slog.Handler
-	if isJSON {
-		handler = slog.NewJSONHandler(writer, &slog.HandlerOptions{
-			Level: level,
-		})
-	} else {
-		handler = slog.NewTextHandler(writer, &slog.HandlerOptions{
-			Level: level,
-		})
-	}
-
-	// Create and set the new logger
-	logger = slog.New(handler)
-	slog.SetDefault(logger)
-
-	// Only log the change if we're not using a null writer
-	if _, isNull := writer.(nullWriter); !isNull {
-		logger.Info("Log file changed", "file", filePath)
-	}
-
-	return nil
-}
-
-// ensureLoggerInitialized makes sure we have a logger, creating a default one if needed
-func ensureLoggerInitialized() {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if logger == nil {
-		// Default to stderr with text format
-		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		}))
-		slog.SetDefault(logger)
+	return &Logger{
+		slogger: slog.New(handler),
+		level:   slog.LevelInfo,
+		writer:  os.Stdout,
 	}
 }
