@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,27 +22,35 @@ import (
 
 // Config contains configuration for the CLI application
 type Config struct {
-	OllamaURL    string  `json:"ollama_url"`
-	DefaultModel string  `json:"default_model"`
-	SystemPrompt string  `json:"system_prompt"`
-	LogFile      string  `json:"log_file"`
-	LogLevel     string  `json:"log_level"`
-	LogSilent    bool    `json:"log_silent"`
-	Temperature  float64 `json:"temperature"`
-	MaxTokens    int     `json:"max_tokens"`
+	OllamaURL           string            `json:"ollama_url"`
+	DefaultModel        string            `json:"default_model"`
+	SystemPrompt        string            `json:"system_prompt"`
+	LogFile             string            `json:"log_file"`
+	LogLevel            string            `json:"log_level"`
+	LogSilent           bool              `json:"log_silent"`
+	Temperature         float64           `json:"temperature"`
+	MaxTokens           int               `json:"max_tokens"`
+	ToolPermissions     map[string]string `json:"tool_permissions"` // Maps tool name to permission level: "always_ask", "ask_once", "never_ask"
+	DangerousToolsWarn  bool              `json:"dangerous_tools_warn"`
+	AlwaysAskPermission bool              `json:"always_ask_permission"` // If true, always prompt for permission regardless of saved settings
+	DisableColors       bool              `json:"disable_colors"`        // If true, disable ANSI color output
 }
 
 // DefaultConfig returns a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		OllamaURL:    "http://localhost:11434/api",
-		DefaultModel: "qwen2.5-coder:3b",
-		SystemPrompt: defaultSystemPrompt,
-		LogFile:      "logs/codezilla.log",
-		LogLevel:     "info",
-		LogSilent:    false,
-		Temperature:  0.7,
-		MaxTokens:    4000,
+		OllamaURL:           "http://localhost:11434/api",
+		DefaultModel:        "qwen2.5-coder:3b",
+		SystemPrompt:        defaultSystemPrompt,
+		LogFile:             "logs/codezilla.log",
+		LogLevel:            "info",
+		LogSilent:           false,
+		Temperature:         0.7,
+		MaxTokens:           4000,
+		ToolPermissions:     make(map[string]string),
+		DangerousToolsWarn:  true,
+		AlwaysAskPermission: false,
+		DisableColors:       false,
 	}
 }
 
@@ -98,7 +105,7 @@ type App struct {
 	LLMClient    ollama.Client
 	Logger       *logger.Logger
 	Config       *Config
-	Reader       *bufio.Reader
+	Reader       InputReader // Using our InputReader interface for readline support
 	Writer       io.Writer
 }
 
@@ -106,6 +113,11 @@ type App struct {
 func NewApp(config *Config) (*App, error) {
 	if config == nil {
 		config = DefaultConfig()
+	}
+
+	// Set up color settings
+	if config.DisableColors {
+		style.DisableColors()
 	}
 
 	// Set up logger
@@ -129,18 +141,76 @@ func NewApp(config *Config) (*App, error) {
 	// Register default tools
 	registerDefaultTools(toolRegistry)
 
+	// Initialize permissions from config
+	if config.ToolPermissions == nil {
+		config.ToolPermissions = make(map[string]string)
+	}
+
+	// Create permission manager with interactive CLI callback
+	permissionManager := tools.NewPermissionManager(func(ctx context.Context, request tools.PermissionRequest) (tools.PermissionResponse, error) {
+		toolName := request.ToolContext.ToolName
+
+		// If AlwaysAskPermission is not set, check saved permissions
+		if !config.AlwaysAskPermission {
+			// Check if we already have a persistent permission setting for this tool
+			if permLevel, exists := config.ToolPermissions[toolName]; exists {
+				if permLevel == "never_ask" {
+					// Auto-approve without prompting
+					return tools.PermissionResponse{Granted: true, RememberMe: true}, nil
+				} else if permLevel == "always_deny" {
+					// Auto-deny without prompting
+					return tools.PermissionResponse{Granted: false, RememberMe: true}, nil
+				}
+			}
+		}
+
+		// Create an interactive CLI permission request
+		response, err := cliPermissionCallback(os.Stdin, os.Stdout, request)
+
+		// If the response should be remembered and was successful, update the config
+		if err == nil && response.RememberMe {
+			var permLevel string
+			if response.Granted {
+				permLevel = "never_ask"
+			} else {
+				permLevel = "always_deny"
+			}
+
+			// Update configuration
+			config.ToolPermissions[toolName] = permLevel
+
+			// Save the updated config
+			_ = SaveConfig(config, "config.json") // Ignore error for now
+		}
+
+		return response, err
+	})
+
 	// Create agent
 	agentConfig := &agent.Config{
-		Model:        config.DefaultModel,
-		MaxTokens:    config.MaxTokens,
-		Temperature:  config.Temperature,
-		SystemPrompt: config.SystemPrompt,
-		OllamaURL:    config.OllamaURL,
-		ToolRegistry: toolRegistry,
-		Logger:       log,
+		Model:         config.DefaultModel,
+		MaxTokens:     config.MaxTokens,
+		Temperature:   config.Temperature,
+		SystemPrompt:  config.SystemPrompt,
+		OllamaURL:     config.OllamaURL,
+		ToolRegistry:  toolRegistry,
+		Logger:        log,
+		PermissionMgr: permissionManager,
 	}
 
 	agent := agent.NewAgent(agentConfig)
+
+	// Set up readline with history support
+	historyPath, err := GetDefaultHistoryFilePath()
+	if err != nil {
+		log.Warn("Could not get history file path", "error", err)
+		historyPath = "" // Fallback to in-memory history only
+	}
+
+	reader, err := NewReadlineInput(style.ColorBold(style.ColorCodeBlue, "user> "), historyPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create input reader: %w", err)
+	}
 
 	return &App{
 		Agent:        agent,
@@ -148,7 +218,7 @@ func NewApp(config *Config) (*App, error) {
 		LLMClient:    ollamaClient,
 		Logger:       log,
 		Config:       config,
-		Reader:       bufio.NewReader(os.Stdin),
+		Reader:       reader,
 		Writer:       os.Stdout,
 	}, nil
 }
@@ -158,6 +228,11 @@ func (a *App) Run(ctx context.Context) error {
 	// Set up signal handling
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Make sure to close readline when we're done
+	if closer, ok := a.Reader.(io.Closer); ok {
+		defer closer.Close()
+	}
 
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
@@ -177,11 +252,10 @@ func (a *App) Run(ctx context.Context) error {
 			a.printGoodbye()
 			return nil
 		default:
-			// Prompt for input
-			fmt.Fprint(a.Writer, style.ColorBold(style.ColorCodeBlue, "\nuser> "))
+			// Prompt is handled by readline
 
 			// Read input line
-			input, err := a.Reader.ReadString('\n')
+			input, err := a.Reader.ReadLine()
 			if err != nil {
 				if err == io.EOF {
 					a.printGoodbye()
@@ -190,8 +264,7 @@ func (a *App) Run(ctx context.Context) error {
 				return fmt.Errorf("failed to read input: %w", err)
 			}
 
-			// Trim whitespace
-			input = strings.TrimSpace(input)
+			// No need to trim - already handled by ReadLine
 
 			// Check for exit command
 			if input == "exit" || input == "quit" {
@@ -220,7 +293,7 @@ func (a *App) ProcessInput(ctx context.Context, input string) error {
 	}
 
 	// Process as a message to the agent
-	fmt.Fprintf(a.Writer, style.ColorBold(style.ColorCodeGreen, "assistant> "))
+	fmt.Fprint(a.Writer, style.ColorBold(style.ColorCodeGreen, "assistant> "))
 
 	// Log query information
 	fmt.Fprintf(os.Stderr, "\n==== USER QUERY ====\n")
@@ -294,6 +367,40 @@ func (a *App) HandleCommand(ctx context.Context, cmd string) error {
 		fmt.Fprintln(a.Writer, style.ColorGreen("Conversation context has been reset. System messages are preserved."))
 	case "/version":
 		a.printVersion()
+	case "/permissions":
+		return a.handlePermissionsCommand(args)
+	case "/color":
+		args = strings.TrimSpace(args)
+		if args == "" {
+			// Show current status
+			if style.UseColors {
+				fmt.Fprintln(a.Writer, "Color output is currently: ON")
+			} else {
+				fmt.Fprintln(a.Writer, "Color output is currently: OFF")
+			}
+			fmt.Fprintln(a.Writer, "Usage: /color [on|off]")
+			return nil
+		}
+
+		switch strings.ToLower(args) {
+		case "on", "enable", "true", "yes", "1":
+			style.EnableColors()
+			a.Config.DisableColors = false
+			fmt.Fprintln(a.Writer, "Color output has been enabled")
+		case "off", "disable", "false", "no", "0":
+			style.DisableColors()
+			a.Config.DisableColors = true
+			fmt.Fprintln(a.Writer, "Color output has been disabled")
+		default:
+			return fmt.Errorf("invalid argument: %s. Use 'on' or 'off'", args)
+		}
+
+		// Save configuration
+		if err := SaveConfig(a.Config, "config.json"); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+
+		return nil
 	case "/config":
 		if args == "" {
 			a.printConfig()
@@ -391,6 +498,12 @@ func (a *App) printConfig() {
 	fmt.Fprintf(a.Writer, "Log file: %s\n", a.Config.LogFile)
 	fmt.Fprintf(a.Writer, "Log level: %s\n", a.Config.LogLevel)
 	fmt.Fprintf(a.Writer, "Log silent: %t\n", a.Config.LogSilent)
+
+	colorStatus := "enabled"
+	if !style.UseColors {
+		colorStatus = "disabled"
+	}
+	fmt.Fprintf(a.Writer, "Color output: %s\n", colorStatus)
 }
 
 // handleConfigCommand handles configuration changes
@@ -441,6 +554,26 @@ func (a *App) handleConfigCommand(args string) error {
 		a.Config.LogSilent = silent
 		fmt.Fprintf(a.Writer, "Log silent set to: %t\n", silent)
 
+	case "color", "colors":
+		enabled, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("invalid color value: %w", err)
+		}
+
+		a.Config.DisableColors = !enabled
+		if enabled {
+			style.EnableColors()
+			fmt.Fprintf(a.Writer, "Color output enabled\n")
+		} else {
+			style.DisableColors()
+			fmt.Fprintf(a.Writer, "Color output disabled\n")
+		}
+
+		// Save configuration
+		if err := SaveConfig(a.Config, "config.json"); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
 	}
@@ -459,15 +592,17 @@ func (a *App) printHelp() {
 	fmt.Fprintln(a.Writer, style.ColorBold(style.ColorCodeWhite, "Codezilla - CLI Agent"))
 	fmt.Fprintln(a.Writer, "")
 	fmt.Fprintln(a.Writer, "Commands:")
-	fmt.Fprintln(a.Writer, "  /help     - Show this help message")
-	fmt.Fprintln(a.Writer, "  /models   - List available models")
-	fmt.Fprintln(a.Writer, "  /model    - Set the active model")
-	fmt.Fprintln(a.Writer, "  /tools    - List available tools")
-	fmt.Fprintln(a.Writer, "  /clear    - Clear the screen")
-	fmt.Fprintln(a.Writer, "  /reset    - Reset conversation context (preserves system messages)")
-	fmt.Fprintln(a.Writer, "  /version  - Show version information")
-	fmt.Fprintln(a.Writer, "  /config   - Show or modify configuration")
-	fmt.Fprintln(a.Writer, "  exit      - Exit the application")
+	fmt.Fprintln(a.Writer, "  /help        - Show this help message")
+	fmt.Fprintln(a.Writer, "  /models      - List available models")
+	fmt.Fprintln(a.Writer, "  /model       - Set the active model")
+	fmt.Fprintln(a.Writer, "  /tools       - List available tools")
+	fmt.Fprintln(a.Writer, "  /permissions - Manage tool permission settings")
+	fmt.Fprintln(a.Writer, "  /color       - Toggle color output (on/off)")
+	fmt.Fprintln(a.Writer, "  /clear       - Clear the screen")
+	fmt.Fprintln(a.Writer, "  /reset       - Reset conversation context (preserves system messages)")
+	fmt.Fprintln(a.Writer, "  /version     - Show version information")
+	fmt.Fprintln(a.Writer, "  /config      - Show or modify configuration")
+	fmt.Fprintln(a.Writer, "  exit         - Exit the application")
 }
 
 // printWelcome prints the welcome message

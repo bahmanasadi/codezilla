@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	DefaultTimeout = 30 * time.Second
+	DefaultTimeout = 900 * time.Second
 	DefaultBaseURL = "http://localhost:11434/api"
 )
 
