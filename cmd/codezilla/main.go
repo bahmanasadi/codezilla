@@ -18,6 +18,8 @@ var (
 	logSilent  bool
 	modelName  string
 	ollamaURL  string
+	noColor    bool
+	forceColor bool
 )
 
 func init() {
@@ -28,6 +30,8 @@ func init() {
 	flag.BoolVar(&logSilent, "log-silent", false, "Disable console logging (overrides config)")
 	flag.StringVar(&modelName, "model", "", "Model name to use (overrides config)")
 	flag.StringVar(&ollamaURL, "ollama-url", "", "Ollama API URL (overrides config)")
+	flag.BoolVar(&noColor, "no-color", false, "Disable colorized output (useful for GoLand's emulated terminal)")
+	flag.BoolVar(&forceColor, "force-color", false, "Force colorized output even in non-terminal environments")
 }
 
 func main() {
@@ -63,6 +67,15 @@ func main() {
 	}
 	if ollamaURL != "" {
 		config.OllamaURL = ollamaURL
+	}
+
+	// Handle color-related flags
+	if noColor {
+		// Set environment variable for the style package
+		os.Setenv("CODEZILLA_NO_COLOR", "true")
+	}
+	if forceColor {
+		os.Setenv("FORCE_COLOR", "true")
 	}
 
 	// Create and run the application

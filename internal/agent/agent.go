@@ -52,6 +52,7 @@ type Config struct {
 	ToolRegistry   tools.ToolRegistry
 	PromptTemplate *PromptTemplate
 	Logger         *logger.Logger
+	PermissionMgr  tools.ToolPermissionManager
 }
 
 // DefaultConfig returns a default configuration
@@ -68,11 +69,12 @@ func DefaultConfig() *Config {
 
 // agent implements the Agent interface
 type agent struct {
-	config       *Config
-	context      *Context
-	ollamaClient ollama.Client
-	toolRegistry tools.ToolRegistry
-	logger       *logger.Logger
+	config        *Config
+	context       *Context
+	ollamaClient  ollama.Client
+	toolRegistry  tools.ToolRegistry
+	logger        *logger.Logger
+	permissionMgr tools.ToolPermissionManager
 }
 
 // NewAgent creates a new agent with the given configuration
@@ -92,12 +94,22 @@ func NewAgent(config *Config) Agent {
 
 	ollamaClient := ollama.NewClient(ollamaOpts...)
 
+	// If no permission manager is provided, create one with a default callback that always allows execution
+	// This will be replaced by the CLI with a proper interactive callback
+	if config.PermissionMgr == nil {
+		config.PermissionMgr = tools.NewPermissionManager(func(ctx context.Context, request tools.PermissionRequest) (tools.PermissionResponse, error) {
+			// Default behavior: grant permission but don't remember
+			return tools.PermissionResponse{Granted: true, RememberMe: false}, nil
+		})
+	}
+
 	agent := &agent{
-		config:       config,
-		context:      NewContext(config.MaxTokens),
-		ollamaClient: ollamaClient,
-		toolRegistry: config.ToolRegistry,
-		logger:       config.Logger,
+		config:        config,
+		context:       NewContext(config.MaxTokens),
+		ollamaClient:  ollamaClient,
+		toolRegistry:  config.ToolRegistry,
+		logger:        config.Logger,
+		permissionMgr: config.PermissionMgr,
 	}
 
 	// Add initial system message if provided
@@ -329,7 +341,7 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 	a.logger.Debug("Checking for tool calls in response", "responseLength", len(response))
 
 	// Pattern to match <tool>...</tool> sections, more flexible with whitespace and formatting
-	pattern := regexp.MustCompile("(?s)<tool>[\\s\\n]*(.*?)[\\s\\n]*</tool>")
+	pattern := regexp.MustCompile(`(?s)<tool>[\s\n]*(.*?)[\s\n]*</tool>`)
 
 	// Find the first match
 	matches := pattern.FindStringSubmatch(response)
@@ -443,6 +455,34 @@ func (a *agent) ExecuteTool(ctx context.Context, toolName string, params map[str
 		return nil, err
 	}
 
+	// Request execution permission
+	if a.permissionMgr != nil {
+		a.logger.Debug("Requesting tool execution permission", "tool", toolName)
+
+		fmt.Fprintf(os.Stderr, "\n==== PERMISSION REQUEST ====\n")
+		fmt.Fprintf(os.Stderr, "Tool: %s\n", toolName)
+
+		// Request permission
+		granted, err := a.permissionMgr.RequestPermission(ctx, toolName, params, tool)
+		if err != nil {
+			a.logger.Error("Permission request failed", "tool", toolName, "error", err)
+			fmt.Fprintf(os.Stderr, "Permission request error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "============================\n\n")
+			return nil, fmt.Errorf("failed to request permission: %w", err)
+		}
+
+		if !granted {
+			a.logger.Info("Permission denied for tool execution", "tool", toolName)
+			fmt.Fprintf(os.Stderr, "Permission denied by user\n")
+			fmt.Fprintf(os.Stderr, "============================\n\n")
+			return nil, tools.ErrPermissionDenied
+		}
+
+		fmt.Fprintf(os.Stderr, "Permission granted\n")
+		fmt.Fprintf(os.Stderr, "============================\n\n")
+		a.logger.Debug("Permission granted for tool execution", "tool", toolName)
+	}
+
 	// Execute the tool
 	startTime := time.Now()
 	result, err := tool.Execute(ctx, params)
@@ -519,12 +559,4 @@ func (a *agent) ClearContext() {
 
 	// Call the context's ClearContext method
 	a.context.ClearContext()
-}
-
-// Helper function to truncate a string to the specified length
-func truncateString(s string, maxLength int) string {
-	if len(s) <= maxLength {
-		return s
-	}
-	return s[:maxLength]
 }
