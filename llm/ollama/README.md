@@ -8,3 +8,10 @@ curl http://localhost:11434/api/generate -d '{
   "stream": false
 }'
 
+curl http://localhost:11434/api/generate -d '{
+  "model": "qwen3:4b",
+  "prompt": "What are the health benefits of walking daily?",
+  "system": "Give the response in JSON format.",
+  "stream": false
+}'
+

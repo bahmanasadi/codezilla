@@ -1,118 +1,108 @@
 package tools
 
 import (
-	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
-// ReadFile reads a file and returns its content
-// If contextLines is specified, it includes that many lines of context around each match
-// If query is provided, it only returns the lines containing the query with context
-func ReadFile(path string, query string, contextLines int) (string, error) {
-	// Check if file exists
-	_, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("file not found: %v", err)
-	}
+// FileReadTool allows reading file contents
+type FileReadTool struct{}
 
-	// Open file
-	file, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to open file: %v", err)
-	}
-	defer file.Close()
-
-	// If no query is provided, read the entire file
-	if query == "" {
-		return readEntireFile(file)
-	}
-
-	// Otherwise, search for the query with context
-	return searchFileWithContext(file, query, contextLines)
+// NewFileReadTool creates a new file read tool
+func NewFileReadTool() *FileReadTool {
+	return &FileReadTool{}
 }
 
-// readEntireFile reads and returns the entire file content
-func readEntireFile(file *os.File) (string, error) {
-	var sb strings.Builder
-	scanner := bufio.NewScanner(file)
-
-	// Add the file path as a header
-	absPath, _ := filepath.Abs(file.Name())
-	sb.WriteString(fmt.Sprintf("File: %s\n\n", absPath))
-
-	lineNum := 1
-	for scanner.Scan() {
-		sb.WriteString(fmt.Sprintf("%d: %s\n", lineNum, scanner.Text()))
-		lineNum++
-	}
-
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("error reading file: %v", err)
-	}
-
-	return sb.String(), nil
+// Name returns the tool name
+func (t *FileReadTool) Name() string {
+	return "fileRead"
 }
 
-// searchFileWithContext searches for query in file and returns matching lines with context
-func searchFileWithContext(file *os.File, query string, contextLines int) (string, error) {
-	// Read all lines
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+// Description returns the tool description
+func (t *FileReadTool) Description() string {
+	return "Reads a file from the local filesystem and returns its contents as a string"
+}
+
+// ParameterSchema returns the JSON schema for this tool's parameters
+func (t *FileReadTool) ParameterSchema() JSONSchema {
+	return JSONSchema{
+		Type: "object",
+		Properties: map[string]JSONSchema{
+			"file_path": {
+				Type:        "string",
+				Description: "The path to the file to read",
+			},
+		},
+		Required: []string{"file_path"},
 	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("error reading file: %v", err)
+}
+
+// Execute reads the file and returns its contents
+func (t *FileReadTool) Execute(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+	// Validate parameters
+	if err := ValidateToolParams(t, params); err != nil {
+		return nil, err
 	}
 
-	// If contextLines is not provided, use a default
-	if contextLines <= 0 {
-		contextLines = 2
-	}
-
-	var sb strings.Builder
-	// Add the file path as a header
-	absPath, _ := filepath.Abs(file.Name())
-	sb.WriteString(fmt.Sprintf("File: %s (showing lines containing '%s' with %d lines of context)\n\n",
-		absPath, query, contextLines))
-
-	// Find matches
-	found := false
-	for i, line := range lines {
-		if strings.Contains(line, query) {
-			found = true
-
-			// Determine context range
-			startLine := i - contextLines
-			if startLine < 0 {
-				startLine = 0
-			}
-			endLine := i + contextLines
-			if endLine >= len(lines) {
-				endLine = len(lines) - 1
-			}
-
-			// Add section header
-			sb.WriteString(fmt.Sprintf("--- Match at line %d ---\n", i+1))
-
-			// Add context lines
-			for j := startLine; j <= endLine; j++ {
-				prefix := "  "
-				if j == i {
-					prefix = "> " // Highlight the matching line
-				}
-				sb.WriteString(fmt.Sprintf("%s%d: %s\n", prefix, j+1, lines[j]))
-			}
-			sb.WriteString("\n")
+	// Extract file path
+	filePath, ok := params["file_path"].(string)
+	if !ok {
+		return nil, &ErrInvalidToolParams{
+			ToolName: t.Name(),
+			Message:  "file_path must be a string",
 		}
 	}
 
-	if !found {
-		sb.WriteString(fmt.Sprintf("No matches found for '%s'\n", query))
+	// Expand ~ to home directory
+	if len(filePath) > 0 && filePath[0] == '~' {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, &ErrToolExecution{
+				ToolName: t.Name(),
+				Message:  "failed to expand home directory",
+				Err:      err,
+			}
+		}
+		filePath = filepath.Join(homeDir, filePath[1:])
 	}
 
-	return sb.String(), nil
+	// Make sure the file exists
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return nil, &ErrToolExecution{
+			ToolName: t.Name(),
+			Message:  fmt.Sprintf("failed to access file: %s", filePath),
+			Err:      err,
+		}
+	}
+
+	// Make sure it's a regular file (not a directory)
+	if fileInfo.IsDir() {
+		return nil, &ErrToolExecution{
+			ToolName: t.Name(),
+			Message:  fmt.Sprintf("path is a directory, not a file: %s", filePath),
+		}
+	}
+
+	// Check file size to prevent loading very large files
+	if fileInfo.Size() > 10*1024*1024 { // 10MB limit
+		return nil, &ErrToolExecution{
+			ToolName: t.Name(),
+			Message:  fmt.Sprintf("file too large (>10MB): %s", filePath),
+		}
+	}
+
+	// Read file contents
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, &ErrToolExecution{
+			ToolName: t.Name(),
+			Message:  fmt.Sprintf("failed to read file: %s", filePath),
+			Err:      err,
+		}
+	}
+
+	return string(content), nil
 }

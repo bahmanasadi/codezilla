@@ -1,114 +1,530 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
+	"time"
 
+	"codezilla/internal/tools"
+	"codezilla/llm/ollama"
 	"codezilla/pkg/logger"
 )
 
-// Step represents a single step in the agent's execution
-type Step struct {
-	Thought string `json:"thought,omitempty"`
-	Action  string `json:"action,omitempty"`
-	Input   string `json:"input,omitempty"`
-	Result  string `json:"result,omitempty"`
+var (
+	ErrLLMResponseFormat   = errors.New("invalid LLM response format")
+	ErrToolExecutionFailed = errors.New("tool execution failed")
+	ErrToolNotFound        = errors.New("tool not found")
+)
+
+// Agent interface defines the core functionality of an agent
+type Agent interface {
+	// ProcessMessage processes a user message and returns the agent's response
+	ProcessMessage(ctx context.Context, message string) (string, error)
+
+	// ExecuteTool executes a tool with the given parameters
+	ExecuteTool(ctx context.Context, toolName string, params map[string]interface{}) (interface{}, error)
+
+	// AddSystemMessage adds a system message to the context
+	AddSystemMessage(message string)
+
+	// AddUserMessage adds a user message to the context
+	AddUserMessage(message string)
+
+	// AddAssistantMessage adds an assistant message to the context
+	AddAssistantMessage(message string)
+
+	// ClearContext clears all non-system messages from the conversation context
+	ClearContext()
 }
 
-// Executor is an interface for executing actions
-type Executor interface {
-	ExecuteAction(action string, input string) (string, error)
-	GetAvailableActions() []string
+// Config contains configuration for the agent
+type Config struct {
+	Model          string
+	MaxTokens      int
+	Temperature    float64
+	SystemPrompt   string
+	OllamaURL      string
+	ToolRegistry   tools.ToolRegistry
+	PromptTemplate *PromptTemplate
+	Logger         *logger.Logger
 }
 
-// Agent manages the interaction using thought-action cycles
-type Agent struct {
-	Executor Executor
-	Steps    []Step
-	MaxSteps int
-}
-
-// New creates a new agent with the provided executor
-func New(executor Executor) *Agent {
-	return &Agent{
-		Executor: executor,
-		Steps:    []Step{},
-		MaxSteps: 10, // Default max steps
+// DefaultConfig returns a default configuration
+func DefaultConfig() *Config {
+	return &Config{
+		Model:          "qwen2.5-coder:3b",
+		MaxTokens:      4000,
+		Temperature:    0.7,
+		OllamaURL:      "http://localhost:11434/api",
+		PromptTemplate: DefaultPromptTemplate(),
+		Logger:         logger.DefaultLogger(),
 	}
 }
 
-// SetMaxSteps sets the maximum number of steps allowed for the agent
-func (a *Agent) SetMaxSteps(max int) {
-	a.MaxSteps = max
+// agent implements the Agent interface
+type agent struct {
+	config       *Config
+	context      *Context
+	ollamaClient ollama.Client
+	toolRegistry tools.ToolRegistry
+	logger       *logger.Logger
 }
 
-// GetHistory returns the step history as a formatted string
-func (a *Agent) GetHistory() string {
-	var sb strings.Builder
-
-	for i, step := range a.Steps {
-		sb.WriteString(fmt.Sprintf("Step %d:\n", i+1))
-		if step.Thought != "" {
-			sb.WriteString(fmt.Sprintf("  Thought: %s\n", step.Thought))
-		}
-		if step.Action != "" && step.Input != "" {
-			sb.WriteString(fmt.Sprintf("  Action: %s(%s)\n", step.Action, step.Input))
-		}
-		if step.Result != "" {
-			sb.WriteString(fmt.Sprintf("  Result: %s\n", step.Result))
-		}
-		sb.WriteString("\n")
+// NewAgent creates a new agent with the given configuration
+func NewAgent(config *Config) Agent {
+	if config == nil {
+		config = DefaultConfig()
 	}
 
-	return sb.String()
+	if config.Logger == nil {
+		config.Logger = logger.DefaultLogger()
+	}
+
+	var ollamaOpts []func(*ollama.ClientOptions)
+	if config.OllamaURL != "" {
+		ollamaOpts = append(ollamaOpts, ollama.WithBaseURL(config.OllamaURL))
+	}
+
+	ollamaClient := ollama.NewClient(ollamaOpts...)
+
+	agent := &agent{
+		config:       config,
+		context:      NewContext(config.MaxTokens),
+		ollamaClient: ollamaClient,
+		toolRegistry: config.ToolRegistry,
+		logger:       config.Logger,
+	}
+
+	// Add initial system message if provided
+	if config.SystemPrompt != "" {
+		// Format system prompt with tool information
+		var toolSpecs []tools.ToolSpec
+		if config.ToolRegistry != nil {
+			toolSpecs = config.ToolRegistry.GetToolSpecs()
+		}
+
+		formattedPrompt := FormatSystemPrompt(config.SystemPrompt, toolSpecs)
+		agent.AddSystemMessage(formattedPrompt)
+	}
+
+	return agent
 }
 
-// GetHistoryJSON returns the step history as a JSON string
-func (a *Agent) GetHistoryJSON() (string, error) {
-	historyJSON, err := json.Marshal(a.Steps)
+// ProcessMessage processes a user message and returns the agent's response
+func (a *agent) ProcessMessage(ctx context.Context, message string) (string, error) {
+	a.logger.Debug("Processing message", "message", message)
+
+	// Add user message to context
+	a.AddUserMessage(message)
+
+	// Generate response
+	a.logger.Debug("Generating initial response")
+	response, err := a.generateResponse(ctx)
 	if err != nil {
-		return "", err
+		a.logger.Error("Failed to generate response", "error", err)
+		return "", fmt.Errorf("failed to generate response: %w", err)
 	}
-	return string(historyJSON), nil
+
+	a.logger.Debug("Checking for tool calls in response")
+
+	// Check for tool usage in response
+	toolCall, remainingText, hasTool := a.extractToolCall(response)
+	if hasTool {
+		a.logger.Debug("Tool call detected",
+			"tool", toolCall.ToolName,
+			"params", fmt.Sprintf("%v", toolCall.Params))
+
+		// Add tool call to context
+		a.context.AddToolCallMessage(toolCall.ToolName, toolCall.Params)
+
+		// Execute tool
+		a.logger.Debug("Executing tool", "tool", toolCall.ToolName)
+		result, err := a.ExecuteTool(ctx, toolCall.ToolName, toolCall.Params)
+
+		if err != nil {
+			a.logger.Error("Tool execution failed", "tool", toolCall.ToolName, "error", err)
+		} else {
+			a.logger.Debug("Tool execution succeeded", "tool", toolCall.ToolName)
+		}
+
+		// Add tool result to context
+		a.context.AddToolResultMessage(result, err)
+
+		// Generate follow-up response
+		a.logger.Debug("Generating follow-up response after tool execution")
+		followUpResponse, followUpErr := a.generateResponse(ctx)
+		if followUpErr != nil {
+			a.logger.Error("Failed to generate follow-up response", "error", followUpErr)
+			return response, nil // Return original response on error
+		}
+
+		a.logger.Debug("Combining responses",
+			"hasRemainingText", remainingText != "",
+			"followUpLength", len(followUpResponse))
+
+		// Combine remaining text with follow-up
+		if remainingText != "" {
+			response = remainingText + "\n\n" + followUpResponse
+		} else {
+			response = followUpResponse
+		}
+	} else {
+		a.logger.Debug("No tool calls detected in response")
+	}
+
+	// Add assistant response to context
+	a.AddAssistantMessage(response)
+
+	return response, nil
 }
 
-// Execute executes a single step with the provided thought, action, and input
-func (a *Agent) Execute(thought, action, input string) (string, error) {
-	if len(a.Steps) >= a.MaxSteps {
-		return "", fmt.Errorf("maximum number of steps (%d) exceeded", a.MaxSteps)
+// generateResponse generates a response from the LLM using the Generate endpoint
+func (a *agent) generateResponse(ctx context.Context) (string, error) {
+	// Get formatted messages for the LLM
+	messages := a.context.GetFormattedMessages()
+
+	a.logger.Debug("Preparing to send request to Ollama", "messageCount", len(messages))
+
+	// Combine messages into a single prompt
+	var systemPrompt string
+	var userPrompt strings.Builder
+
+	// Check if we have any messages to process
+	if len(messages) == 0 {
+		return "", fmt.Errorf("no messages in context to generate a response")
 	}
 
-	logger.Debug("Executing agent step",
-		"thought", thought,
-		"action", action,
-		"input", input,
-		"step", len(a.Steps)+1)
-
-	// Create a new step
-	step := Step{
-		Thought: thought,
-		Action:  action,
-		Input:   input,
+	// Extract the tools information for the system prompt
+	var toolsInfo string
+	if a.toolRegistry != nil && len(a.toolRegistry.ListTools()) > 0 {
+		toolsInfo = "You have access to the following tools:\n\n"
+		for _, tool := range a.toolRegistry.ListTools() {
+			toolsInfo += fmt.Sprintf("- %s: %s\n", tool.Name(), tool.Description())
+		}
+		toolsInfo += "\nWhen you need to use a tool, format your response like this:\n"
+		toolsInfo += "<tool>\n{\n  \"name\": \"toolName\",\n  \"params\": {\n    \"param1\": \"value1\",\n    \"param2\": \"value2\"\n  }\n}\n</tool>\n\n"
 	}
 
-	// Execute the action
-	result, err := a.Executor.ExecuteAction(action, input)
+	// First process system messages
+	for _, msg := range messages {
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+
+		if role == "system" {
+			if systemPrompt == "" {
+				systemPrompt = content
+			} else {
+				systemPrompt += "\n\n" + content
+			}
+		}
+	}
+
+	// Add tools information to system prompt if not already included
+	if toolsInfo != "" && !strings.Contains(systemPrompt, "You have access to the following tools") {
+		systemPrompt = systemPrompt + "\n\n" + toolsInfo
+	}
+
+	// Track if we have any user/assistant messages
+	hasConversation := false
+
+	// Then add user/assistant messages as a conversation
+	for _, msg := range messages {
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+
+		if content == "" {
+			continue // Skip empty messages
+		}
+
+		if role == "system" {
+			continue // Already processed
+		} else if role == "user" {
+			hasConversation = true
+			userPrompt.WriteString("User: ")
+			userPrompt.WriteString(content)
+			userPrompt.WriteString("\n\n")
+		} else if role == "assistant" {
+			hasConversation = true
+			userPrompt.WriteString("Assistant: ")
+			userPrompt.WriteString(content)
+			userPrompt.WriteString("\n\n")
+		} else if role == "tool" {
+			hasConversation = true
+			userPrompt.WriteString("Tool Result: ")
+			userPrompt.WriteString(content)
+			userPrompt.WriteString("\n\n")
+		}
+	}
+
+	// Make sure we have a user prompt
+	if !hasConversation {
+		// If somehow we have no conversation, create a default prompt
+		userPrompt.WriteString("User: Hello\n\n")
+	}
+
+	// Add final prompt for the assistant to respond
+	userPrompt.WriteString("Assistant: ")
+
+	// Create generate request
+	request := ollama.GenerateRequest{
+		Model:  a.config.Model,
+		Prompt: userPrompt.String(),
+		System: systemPrompt,
+		Stream: false, // Ensure stream is false for non-streaming responses
+		Options: map[string]interface{}{
+			"temperature": a.config.Temperature,
+		},
+	}
+
+	a.logger.Debug("Sending Generate request to Ollama",
+		"model", a.config.Model,
+		"temperature", a.config.Temperature,
+		"systemPromptLength", len(systemPrompt),
+		"userPromptLength", userPrompt.Len())
+
+	// Send request to Ollama
+	startTime := time.Now()
+	response, err := a.ollamaClient.Generate(ctx, request)
+	duration := time.Since(startTime)
+
 	if err != nil {
-		// Add to steps even if error occurred
-		step.Result = fmt.Sprintf("Error: %s", err.Error())
-		a.Steps = append(a.Steps, step)
-		return "", err
+		a.logger.Error("Failed to get response from Ollama Generate API",
+			"error", err,
+			"duration", duration.String())
+		return "", fmt.Errorf("failed to get response from Ollama Generate API: %w", err)
 	}
 
-	// Record the result
-	step.Result = result
-	a.Steps = append(a.Steps, step)
+	a.logger.Debug("Received response from Ollama Generate API",
+		"responseLength", len(response.Response),
+		"duration", duration.String(),
+		"model", response.Model)
+
+	// Process the response if needed
+	cleanResponse := response.Response
+
+	// Some models might prepend "Assistant:" to their responses when using the Generate API
+	// Let's remove it if present
+	if strings.HasPrefix(cleanResponse, "Assistant:") {
+		cleanResponse = strings.TrimPrefix(cleanResponse, "Assistant:")
+		cleanResponse = strings.TrimSpace(cleanResponse)
+	}
+
+	// If the response is empty, provide a fallback
+	if cleanResponse == "" {
+		a.logger.Warn("Empty response from model, using fallback")
+		cleanResponse = "I'm sorry, I wasn't able to generate a proper response. Could you please try again or rephrase your question?"
+	}
+
+	return cleanResponse, nil
+}
+
+// extractToolCall extracts a tool call from the response
+func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
+	// Log for debugging purposes
+	a.logger.Debug("Checking for tool calls in response", "responseLength", len(response))
+
+	// Pattern to match <tool>...</tool> sections, more flexible with whitespace and formatting
+	pattern := regexp.MustCompile("(?s)<tool>[\\s\\n]*(.*?)[\\s\\n]*</tool>")
+
+	// Find the first match
+	matches := pattern.FindStringSubmatch(response)
+	if len(matches) < 2 {
+		// Try alternative pattern with backticks that might be used by LLMs
+		altPattern := regexp.MustCompile("(?s)```json[\\s\\n]*(.*?)[\\s\\n]*```")
+		matches = altPattern.FindStringSubmatch(response)
+
+		if len(matches) < 2 {
+			a.logger.Debug("No tool call patterns found in response")
+			return nil, response, false
+		}
+	}
+
+	// Extract tool JSON
+	toolJSON := matches[1]
+	a.logger.Debug("Found potential tool call", "json", toolJSON)
+
+	// Clean up the JSON - remove any leading/trailing backticks or JSON formatting
+	toolJSON = strings.TrimPrefix(toolJSON, "```json")
+	toolJSON = strings.TrimSuffix(toolJSON, "```")
+	toolJSON = strings.TrimSpace(toolJSON)
+
+	// Parse the tool call
+	var toolCall struct {
+		Name   string                 `json:"name"`
+		Params map[string]interface{} `json:"params"`
+	}
+
+	err := json.Unmarshal([]byte(toolJSON), &toolCall)
+	if err != nil {
+		a.logger.Error("Failed to parse tool call", "error", err, "json", toolJSON)
+
+		// Try with more preprocessing of the JSON
+		toolJSON = strings.ReplaceAll(toolJSON, "\n", "")
+		toolJSON = strings.ReplaceAll(toolJSON, "\r", "")
+
+		// Try again with cleaned JSON
+		err = json.Unmarshal([]byte(toolJSON), &toolCall)
+		if err != nil {
+			a.logger.Error("Still failed to parse tool call after cleaning", "error", err)
+			return nil, response, false
+		}
+	}
+
+	// Validate the tool call has required fields
+	if toolCall.Name == "" {
+		a.logger.Error("Tool call missing name field", "json", toolJSON)
+		return nil, response, false
+	}
+
+	if toolCall.Params == nil {
+		a.logger.Error("Tool call missing params field", "json", toolJSON)
+		return nil, response, false
+	}
+
+	// Create the ToolCall object
+	result := &ToolCall{
+		ToolName: toolCall.Name,
+		Params:   toolCall.Params,
+	}
+
+	a.logger.Debug("Successfully extracted tool call",
+		"toolName", result.ToolName,
+		"paramsCount", len(result.Params))
+
+	// Remove the tool section from the response
+	remainingText := pattern.ReplaceAllString(response, "")
+	remainingText = strings.TrimSpace(remainingText)
+
+	return result, remainingText, true
+}
+
+// ExecuteTool executes a tool with the given parameters
+func (a *agent) ExecuteTool(ctx context.Context, toolName string, params map[string]interface{}) (interface{}, error) {
+	if a.toolRegistry == nil {
+		return nil, ErrToolNotFound
+	}
+
+	// Get the tool
+	tool, found := a.toolRegistry.GetTool(toolName)
+	if !found {
+		a.logger.Error("Tool not found", "tool", toolName)
+		fmt.Fprintf(os.Stderr, "\n==== TOOL NOT FOUND ====\n")
+		fmt.Fprintf(os.Stderr, "Tool name: %s\n", toolName)
+		fmt.Fprintf(os.Stderr, "=======================\n\n")
+		return nil, fmt.Errorf("%w: %s", ErrToolNotFound, toolName)
+	}
+
+	// Log tool execution start
+	fmt.Fprintf(os.Stderr, "\n==== EXECUTING TOOL ====\n")
+	fmt.Fprintf(os.Stderr, "Tool: %s\n", toolName)
+	fmt.Fprintf(os.Stderr, "Description: %s\n", tool.Description())
+
+	// Format parameters for logging
+	paramsJSON, _ := json.MarshalIndent(params, "", "  ")
+	fmt.Fprintf(os.Stderr, "Parameters:\n%s\n", string(paramsJSON))
+	fmt.Fprintf(os.Stderr, "Start time: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "=======================\n\n")
+
+	a.logger.Info("Executing tool", "tool", toolName, "params", params)
+
+	// Validate parameters
+	err := tools.ValidateToolParams(tool, params)
+	if err != nil {
+		a.logger.Error("Invalid tool parameters", "tool", toolName, "error", err)
+		fmt.Fprintf(os.Stderr, "\n==== TOOL VALIDATION ERROR ====\n")
+		fmt.Fprintf(os.Stderr, "Tool: %s\n", toolName)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "==============================\n\n")
+		return nil, err
+	}
+
+	// Execute the tool
+	startTime := time.Now()
+	result, err := tool.Execute(ctx, params)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		// Log tool execution failure
+		a.logger.Error("Tool execution failed", "tool", toolName, "error", err, "duration", duration.String())
+		fmt.Fprintf(os.Stderr, "\n==== TOOL EXECUTION FAILED ====\n")
+		fmt.Fprintf(os.Stderr, "Tool: %s\n", toolName)
+		fmt.Fprintf(os.Stderr, "Duration: %s\n", duration.String())
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "==============================\n\n")
+		return nil, fmt.Errorf("%w: %s: %v", ErrToolExecutionFailed, toolName, err)
+	}
+
+	// Log tool execution success
+	fmt.Fprintf(os.Stderr, "\n==== TOOL EXECUTION COMPLETED ====\n")
+	fmt.Fprintf(os.Stderr, "Tool: %s\n", toolName)
+	fmt.Fprintf(os.Stderr, "Duration: %s\n", duration.String())
+
+	// Format result for logging
+	var resultOutput string
+	resultJSON, err := json.MarshalIndent(result, "", "  ")
+	if err == nil {
+		resultOutput = string(resultJSON)
+	} else {
+		resultOutput = fmt.Sprintf("%v", result)
+	}
+
+	// Truncate very large results for the log
+	if len(resultOutput) > 500 {
+		fmt.Fprintf(os.Stderr, "Result: %s...\n[result truncated, total length: %d bytes]\n",
+			resultOutput[:500], len(resultOutput))
+	} else {
+		fmt.Fprintf(os.Stderr, "Result: %s\n", resultOutput)
+	}
+
+	fmt.Fprintf(os.Stderr, "Finish time: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "================================\n\n")
+
+	a.logger.Info("Tool executed successfully",
+		"tool", toolName,
+		"duration", duration.String(),
+		"resultSize", len(resultOutput))
 
 	return result, nil
 }
 
-// Reset clears the agent's step history
-func (a *Agent) Reset() {
-	a.Steps = []Step{}
+// AddSystemMessage adds a system message to the context
+func (a *agent) AddSystemMessage(message string) {
+	a.context.AddSystemMessage(message)
+}
+
+// AddUserMessage adds a user message to the context
+func (a *agent) AddUserMessage(message string) {
+	a.context.AddUserMessage(message)
+}
+
+// AddAssistantMessage adds an assistant message to the context
+func (a *agent) AddAssistantMessage(message string) {
+	a.context.AddAssistantMessage(message)
+}
+
+// ClearContext clears all non-system messages from the conversation context
+func (a *agent) ClearContext() {
+	a.logger.Info("Clearing conversation context (keeping system messages)")
+
+	// Display to stderr for visibility
+	fmt.Fprintf(os.Stderr, "\n==== CLEARING CONVERSATION CONTEXT ====\n")
+	fmt.Fprintf(os.Stderr, "Time: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "Keeping system messages\n")
+	fmt.Fprintf(os.Stderr, "======================================\n\n")
+
+	// Call the context's ClearContext method
+	a.context.ClearContext()
+}
+
+// Helper function to truncate a string to the specified length
+func truncateString(s string, maxLength int) string {
+	if len(s) <= maxLength {
+		return s
+	}
+	return s[:maxLength]
 }
