@@ -18,6 +18,15 @@ const (
 	ColorCodePurple = "\033[35m"
 	ColorCodeCyan   = "\033[36m"
 	ColorCodeWhite  = "\033[37m"
+
+	// Background colors
+	ColorCodeBgRed    = "\033[41m"
+	ColorCodeBgGreen  = "\033[42m"
+	ColorCodeBgYellow = "\033[43m"
+	ColorCodeBgBlue   = "\033[44m"
+	ColorCodeBgPurple = "\033[45m"
+	ColorCodeBgCyan   = "\033[46m"
+	ColorCodeBgWhite  = "\033[47m"
 )
 
 var (
@@ -127,6 +136,35 @@ func ColorCyan(text string) string {
 
 func ColorWhite(text string) string {
 	return Color(ColorCodeWhite, text)
+}
+
+// Background color shortcuts
+func ColorBgRed(text string) string {
+	if !UseColors {
+		return text
+	}
+	return ColorCodeBgRed + text + ColorCodeReset
+}
+
+func ColorBgGreen(text string) string {
+	if !UseColors {
+		return text
+	}
+	return ColorCodeBgGreen + text + ColorCodeReset
+}
+
+func ColorRedBg(text string) string {
+	if !UseColors {
+		return text
+	}
+	return ColorCodeRed + ColorCodeBgWhite + text + ColorCodeReset
+}
+
+func ColorGreenBg(text string) string {
+	if !UseColors {
+		return text
+	}
+	return ColorCodeGreen + ColorCodeBgWhite + text + ColorCodeReset
 }
 
 // Colorize formats a string with embedded color codes
