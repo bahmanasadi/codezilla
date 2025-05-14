@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"codezilla/internal/tools"
@@ -20,10 +21,28 @@ func cliPermissionCallback(in io.Reader, out io.Writer, request tools.Permission
 	fmt.Fprintf(out, "Tool: %s\n", style.ColorBold(style.ColorCodeCyan, request.ToolContext.ToolName))
 	fmt.Fprintf(out, "Action: %s\n", style.ColorBold(style.ColorCodeWhite, request.Description))
 
-	// Format parameters for display
-	fmt.Fprintln(out, "Parameters:")
-	for k, v := range request.ToolContext.Params {
-		fmt.Fprintf(out, "  %s: %v\n", k, v)
+	// Check if there's a file diff to display
+	fileDiff, hasDiff := request.ToolContext.Params["_fileDiff"].(string)
+	filePath, _ := request.ToolContext.Params["file_path"].(string)
+
+	// Debug info - write to stderr to avoid interfering with UI
+	fmt.Fprintf(os.Stderr, "\nDEBUG: ToolName=%s, hasDiff=%v, fileDiff empty=%v\n",
+		request.ToolContext.ToolName, hasDiff, fileDiff == "")
+
+	// If this is a fileWrite operation with a diff, show the diff
+	if request.ToolContext.ToolName == "fileWrite" && hasDiff && fileDiff != "" {
+		fmt.Fprintln(out, "")
+		fmt.Fprintf(out, style.ColorBold(style.ColorCodeWhite, "Changes to %s:\n"), style.ColorBold(style.ColorCodeCyan, filePath))
+		fmt.Fprintln(out, fileDiff)
+	} else {
+		// Format regular parameters for display
+		fmt.Fprintln(out, "Parameters:")
+		for k, v := range request.ToolContext.Params {
+			// Skip internal parameters that start with _
+			if !strings.HasPrefix(k, "_") {
+				fmt.Fprintf(out, "  %s: %v\n", k, v)
+			}
+		}
 	}
 
 	// Ask for permission with options

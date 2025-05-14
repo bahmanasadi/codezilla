@@ -22,7 +22,7 @@ func (t *FileWriteTool) Name() string {
 
 // Description returns the tool description
 func (t *FileWriteTool) Description() string {
-	return "Writes content to a file on the local filesystem"
+	return "Writes content to a file on the local filesystem with diff preview for existing files"
 }
 
 // ParameterSchema returns the JSON schema for this tool's parameters
@@ -41,6 +41,11 @@ func (t *FileWriteTool) ParameterSchema() JSONSchema {
 			"append": {
 				Type:        "boolean",
 				Description: "Whether to append to the file instead of overwriting it",
+				Default:     false,
+			},
+			"skip_diff": {
+				Type:        "boolean",
+				Description: "Skip showing diff for existing files",
 				Default:     false,
 			},
 		},
@@ -78,6 +83,12 @@ func (t *FileWriteTool) Execute(ctx context.Context, params map[string]interface
 		append = appendParam
 	}
 
+	// Optional parameters for diff control
+	skipDiff := false
+	if skipDiffParam, ok := params["skip_diff"].(bool); ok {
+		skipDiff = skipDiffParam
+	}
+
 	// Expand ~ to home directory
 	if len(filePath) > 0 && filePath[0] == '~' {
 		homeDir, err := os.UserHomeDir()
@@ -99,6 +110,49 @@ func (t *FileWriteTool) Execute(ctx context.Context, params map[string]interface
 			Message:  fmt.Sprintf("failed to create directory: %s", dir),
 			Err:      err,
 		}
+	}
+
+	// Check if file exists and generate diff if needed
+	fileExists := false
+	var existingContent string
+	var diffOutput string
+
+	if !append {
+		// Only check for diff if we're not appending
+		fileInfo, err := os.Stat(filePath)
+		if err == nil && !fileInfo.IsDir() {
+			fileExists = true
+
+			// Only generate diff if not skipped
+			if !skipDiff {
+				// Read existing content
+				existingBytes, err := os.ReadFile(filePath)
+				if err == nil {
+					existingContent = string(existingBytes)
+
+					// Generate diff if content is different
+					if existingContent != content {
+						// Generate diff directly
+						diffOutput = GenerateDiff(existingContent, content, 3)
+					} else {
+						diffOutput = "No changes detected."
+					}
+				}
+			}
+		}
+	}
+
+	// If file exists and changes detected, add diff info to param map for permission request
+	// and also display the diff directly to the user in the terminal
+	if fileExists && !skipDiff && diffOutput != "No changes detected." {
+		// Add diff to params with special "_" prefix to indicate it's internal
+		params["_fileDiff"] = diffOutput
+
+		// Also print the diff directly to stderr for immediate visibility
+		fmt.Fprintf(os.Stderr, "\n==== FILE DIFF ====\n")
+		fmt.Fprintf(os.Stderr, "File: %s\n", filePath)
+		fmt.Fprintf(os.Stderr, "%s\n", diffOutput)
+		fmt.Fprintf(os.Stderr, "================\n\n")
 	}
 
 	// Determine flags based on append mode
@@ -130,10 +184,26 @@ func (t *FileWriteTool) Execute(ctx context.Context, params map[string]interface
 		}
 	}
 
-	return map[string]interface{}{
-		"success":   true,
-		"file_path": filePath,
-		"bytes":     len(content),
-		"appended":  append,
-	}, nil
+	// If a diff was generated, show it again after writing (so user can see what was changed)
+	if fileExists && !skipDiff && diffOutput != "No changes detected." {
+		fmt.Fprintf(os.Stderr, "\n==== CHANGES WRITTEN ====\n")
+		fmt.Fprintf(os.Stderr, "File updated: %s\n", filePath)
+		fmt.Fprintf(os.Stderr, "Bytes written: %d\n", len(content))
+		if append {
+			fmt.Fprintf(os.Stderr, "Mode: Append\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "Mode: Overwrite\n")
+		}
+		fmt.Fprintf(os.Stderr, "======================\n\n")
+	}
+
+	result := map[string]interface{}{
+		"success":     true,
+		"file_path":   filePath,
+		"bytes":       len(content),
+		"appended":    append,
+		"file_exists": fileExists,
+	}
+
+	return result, nil
 }

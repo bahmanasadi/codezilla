@@ -125,13 +125,19 @@ func (m *defaultPermissionManager) RequestPermission(ctx context.Context, toolNa
 	}
 
 	// We need to ask for permission
+	// Copy params to avoid any potential race conditions
+	paramsCopy := make(map[string]interface{})
+	for k, v := range params {
+		paramsCopy[k] = v
+	}
+
 	request := PermissionRequest{
 		ToolContext: ToolContext{
 			ToolName: toolName,
-			Params:   params,
+			Params:   paramsCopy, // Use our copy
 			Time:     time.Now(),
 		},
-		Description: generateDescription(tool, params),
+		Description: generateDescription(tool, paramsCopy),
 		Tool:        tool,
 	}
 
