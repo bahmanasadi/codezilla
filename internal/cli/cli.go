@@ -357,6 +357,11 @@ func (a *App) HandleCommand(ctx context.Context, cmd string) error {
 	case "/models":
 		return a.listModels(ctx)
 	case "/model":
+		if args == "" {
+			fmt.Fprintf(a.Writer, "Current model: %s\n", style.ColorGreen(a.Config.DefaultModel))
+			fmt.Fprintln(a.Writer, "To change model, use: /model <model-name>")
+			return nil
+		}
 		return a.setModel(ctx, args)
 	case "/tools":
 		a.listTools()
@@ -463,7 +468,17 @@ func (a *App) setModel(ctx context.Context, modelName string) error {
 
 	// Update the config
 	a.Config.DefaultModel = modelName
+
+	// Update the agent's model
+	a.Agent.SetModel(modelName)
+
 	fmt.Fprintf(a.Writer, "Model changed to: %s\n", style.ColorGreen(modelName))
+
+	// Save the updated configuration
+	if err := SaveConfig(a.Config, "config.json"); err != nil {
+		a.Logger.Warn("Failed to save config after model change", "error", err)
+		// Don't return error as the model change itself succeeded
+	}
 
 	return nil
 }
@@ -594,7 +609,7 @@ func (a *App) printHelp() {
 	fmt.Fprintln(a.Writer, "Commands:")
 	fmt.Fprintln(a.Writer, "  /help        - Show this help message")
 	fmt.Fprintln(a.Writer, "  /models      - List available models")
-	fmt.Fprintln(a.Writer, "  /model       - Set the active model")
+	fmt.Fprintln(a.Writer, "  /model       - Show current model or change to a new model")
 	fmt.Fprintln(a.Writer, "  /tools       - List available tools")
 	fmt.Fprintln(a.Writer, "  /permissions - Manage tool permission settings")
 	fmt.Fprintln(a.Writer, "  /color       - Toggle color output (on/off)")

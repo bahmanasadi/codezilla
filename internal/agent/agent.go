@@ -40,6 +40,9 @@ type Agent interface {
 
 	// ClearContext clears all non-system messages from the conversation context
 	ClearContext()
+
+	// SetModel changes the active model used by the agent
+	SetModel(model string)
 }
 
 // Config contains configuration for the agent
@@ -559,4 +562,19 @@ func (a *agent) ClearContext() {
 
 	// Call the context's ClearContext method
 	a.context.ClearContext()
+}
+
+// SetModel changes the active model used by the agent
+func (a *agent) SetModel(model string) {
+	a.logger.Info("Changing model", "from", a.config.Model, "to", model)
+
+	// Display to stderr for visibility
+	fmt.Fprintf(os.Stderr, "\n==== CHANGING MODEL ====\n")
+	fmt.Fprintf(os.Stderr, "From: %s\n", a.config.Model)
+	fmt.Fprintf(os.Stderr, "To: %s\n", model)
+	fmt.Fprintf(os.Stderr, "Time: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "=======================\n\n")
+
+	// Update the model in the config
+	a.config.Model = model
 }
