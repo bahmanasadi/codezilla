@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/term"
 	"io"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/term"
 
 	"codezilla/internal/agent"
 	"codezilla/internal/tools"

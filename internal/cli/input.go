@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -19,8 +20,12 @@ const (
 	upArrow    = "[A"
 	downArrow  = "[B"
 	clearLine  = "\r\033[K" // Carriage return + clear line
+	moveUp     = "\033[1A"  // Move cursor up one line
+	clearDown  = "\033[J"   // Clear from cursor to end of screen
 	backspace  = '\x7f'     // DEL character
 	ctrlC      = '\x03'
+	ctrlW      = '\x17' // Delete previous word
+	ctrlU      = '\x15' // Clear entire line
 )
 
 // InputReader provides an interface for reading user input
@@ -40,24 +45,37 @@ type SimpleInput struct {
 	rawMode      bool        // Whether terminal is in raw mode
 	fd           int         // File descriptor for terminal
 	oldState     *term.State // Original terminal state
+	width        int         // Terminal width
 }
 
 // NewReadlineInput creates a new input reader with history support
 // This is a replacement for the github.com/chzyer/readline based implementation
 func NewReadlineInput(prompt string, historyFile string) (*SimpleInput, error) {
+	fd := int(os.Stdin.Fd())
+
+	// Get terminal width
+	width, _, err := term.GetSize(fd)
+	if err != nil {
+		width = 80 // Default width if we can't get terminal size
+	}
+
 	input := &SimpleInput{
 		prompt:       prompt,
 		reader:       bufio.NewReader(os.Stdin),
 		historyFile:  historyFile,
 		history:      make([]string, 0, 100),
 		historyIndex: -1,
-		fd:           int(os.Stdin.Fd()),
+		fd:           fd,
+		width:        width,
 	}
 
 	// Check if stdin is a terminal
 	if term.IsTerminal(input.fd) {
 		// It's a terminal, we can enable raw mode for arrow key input
 		input.rawMode = true
+
+		// Start a goroutine to monitor terminal size changes
+		go input.watchTerminalSize()
 	}
 
 	// Load history from file if it exists
@@ -66,6 +84,85 @@ func NewReadlineInput(prompt string, historyFile string) (*SimpleInput, error) {
 	}
 
 	return input, nil
+}
+
+// watchTerminalSize monitors for terminal size changes
+func (s *SimpleInput) watchTerminalSize() {
+	// Check terminal size periodically
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if width, _, err := term.GetSize(s.fd); err == nil {
+			if width != s.width {
+				s.mu.Lock()
+				s.width = width
+				s.mu.Unlock()
+			}
+		}
+	}
+}
+
+// calculateLinePosition calculates the number of lines and cursor position
+func (s *SimpleInput) calculateLinePosition(text string, cursorPos int) (int, int) {
+	promptLen := len(s.prompt)
+	totalLen := promptLen + len(text)
+	promptLines := promptLen / s.width
+	if promptLen%s.width > 0 {
+		promptLines++
+	}
+
+	totalLines := totalLen / s.width
+	if totalLen%s.width > 0 {
+		totalLines++
+	}
+
+	cursorAbsolutePos := promptLen + cursorPos
+	cursorLine := cursorAbsolutePos / s.width
+
+	return totalLines, cursorLine
+}
+
+// clearAndRedraw clears multiline input and redraws it
+func (s *SimpleInput) clearAndRedraw(text string, cursorPos int) {
+	totalLines, cursorLine := s.calculateLinePosition(text, cursorPos)
+
+	// Move cursor to the start of the input
+	if cursorLine > 0 {
+		fmt.Printf("\033[%dA", cursorLine)
+	}
+	fmt.Print("\r")
+
+	// Clear all lines
+	fmt.Print(clearLine)
+	if totalLines > 1 {
+		fmt.Print(clearDown)
+	}
+
+	// Redraw prompt and text
+	fmt.Print(s.prompt)
+	fmt.Print(text)
+
+	// Position cursor
+	if cursorPos < len(text) {
+		endPos := len(s.prompt) + len(text)
+		endLine := endPos / s.width
+		endCol := endPos % s.width
+
+		targetPos := len(s.prompt) + cursorPos
+		targetLine := targetPos / s.width
+		targetCol := targetPos % s.width
+
+		// Move lines if needed
+		if endLine > targetLine {
+			fmt.Printf("\033[%dA", endLine-targetLine)
+		}
+
+		// Move columns
+		if endCol > targetCol {
+			fmt.Printf("\033[%dD", endCol-targetCol)
+		}
+	}
 }
 
 // ReadLine reads a line of input from the terminal with arrow key support for history
@@ -130,22 +227,52 @@ func (s *SimpleInput) ReadLine() (string, error) {
 				buf.Reset()
 				buf.WriteString(newLine)
 
-				// Redraw the line
-				fmt.Print(clearLine)
-				fmt.Print(s.prompt)
-				fmt.Print(buf.String())
-
-				// Move cursor to correct position
-				if currentPos < buf.Len() {
-					// Move cursor back from end of line to current position
-					fmt.Printf("\033[%dD", buf.Len()-currentPos)
-				}
+				// Use the new clearing mechanism for multiline support
+				s.clearAndRedraw(buf.String(), currentPos)
 			}
 
 		case r == ctrlC:
 			// Ctrl+C pressed, terminate
 			fmt.Print("^C\r\n")
 			return "", io.EOF
+
+		case r == ctrlW:
+			// Ctrl+W pressed, delete previous word
+			if currentPos > 0 {
+				line := buf.String()
+
+				// Find the start of the previous word
+				wordStart := currentPos
+
+				// Skip any trailing spaces before cursor
+				for wordStart > 0 && wordStart <= len(line) && (wordStart == len(line) || line[wordStart-1] == ' ') {
+					wordStart--
+				}
+
+				// Find the beginning of the word
+				for wordStart > 0 && line[wordStart-1] != ' ' {
+					wordStart--
+				}
+
+				// Delete from word start to current position
+				if wordStart < currentPos {
+					newLine := line[:wordStart] + line[currentPos:]
+					buf.Reset()
+					buf.WriteString(newLine)
+					currentPos = wordStart
+
+					// Use the new clearing mechanism for multiline support
+					s.clearAndRedraw(buf.String(), currentPos)
+				}
+			}
+
+		case r == ctrlU:
+			// Ctrl+U pressed, clear entire line
+			buf.Reset()
+			currentPos = 0
+
+			// Use the new clearing mechanism for multiline support
+			s.clearAndRedraw(buf.String(), currentPos)
 
 		case r == escapeChar:
 			// Could be an arrow key
@@ -180,10 +307,8 @@ func (s *SimpleInput) ReadLine() (string, error) {
 					buf.WriteString(historyItem)
 					currentPos = buf.Len()
 
-					// Redraw the line
-					fmt.Print(clearLine)
-					fmt.Print(s.prompt)
-					fmt.Print(historyItem)
+					// Use the new clearing mechanism for multiline support
+					s.clearAndRedraw(historyItem, currentPos)
 				}
 
 			case downArrow:
@@ -201,19 +326,16 @@ func (s *SimpleInput) ReadLine() (string, error) {
 					buf.WriteString(historyItem)
 					currentPos = buf.Len()
 
-					// Redraw the line
-					fmt.Print(clearLine)
-					fmt.Print(s.prompt)
-					fmt.Print(historyItem)
+					// Use the new clearing mechanism for multiline support
+					s.clearAndRedraw(historyItem, currentPos)
 				} else if s.historyIndex == historyLen-1 {
 					// At the end of history, show empty line
 					s.historyIndex = historyLen
 					buf.Reset()
 					currentPos = 0
 
-					// Redraw the line
-					fmt.Print(clearLine)
-					fmt.Print(s.prompt)
+					// Use the new clearing mechanism for multiline support
+					s.clearAndRedraw(buf.String(), currentPos)
 				}
 			}
 
@@ -227,16 +349,8 @@ func (s *SimpleInput) ReadLine() (string, error) {
 				buf.WriteString(newLine)
 				currentPos++
 
-				// Redraw the line
-				fmt.Print(clearLine)
-				fmt.Print(s.prompt)
-				fmt.Print(buf.String())
-
-				// Move cursor to correct position
-				if currentPos < buf.Len() {
-					// Move cursor back from end of line to current position
-					fmt.Printf("\033[%dD", buf.Len()-currentPos)
-				}
+				// Use the new clearing mechanism for multiline support
+				s.clearAndRedraw(buf.String(), currentPos)
 			}
 		}
 	}
