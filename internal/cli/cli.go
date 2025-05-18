@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -22,18 +23,28 @@ import (
 
 // Config contains configuration for the CLI application
 type Config struct {
-	OllamaURL           string            `json:"ollama_url"`
-	DefaultModel        string            `json:"default_model"`
-	SystemPrompt        string            `json:"system_prompt"`
-	LogFile             string            `json:"log_file"`
-	LogLevel            string            `json:"log_level"`
-	LogSilent           bool              `json:"log_silent"`
-	Temperature         float64           `json:"temperature"`
-	MaxTokens           int               `json:"max_tokens"`
-	ToolPermissions     map[string]string `json:"tool_permissions"` // Maps tool name to permission level: "always_ask", "ask_once", "never_ask"
-	DangerousToolsWarn  bool              `json:"dangerous_tools_warn"`
-	AlwaysAskPermission bool              `json:"always_ask_permission"` // If true, always prompt for permission regardless of saved settings
-	DisableColors       bool              `json:"disable_colors"`        // If true, disable ANSI color output
+	OllamaURL           string                   `json:"ollama_url"`
+	DefaultModel        string                   `json:"default_model"`
+	ModelProfiles       map[string]*ModelProfile `json:"model_profiles"` // Profiles for different models
+	SystemPrompt        string                   `json:"system_prompt"`
+	LogFile             string                   `json:"log_file"`
+	LogLevel            string                   `json:"log_level"`
+	LogSilent           bool                     `json:"log_silent"`
+	Temperature         float64                  `json:"temperature"`
+	MaxTokens           int                      `json:"max_tokens"`
+	ToolPermissions     map[string]string        `json:"tool_permissions"` // Maps tool name to permission level: "always_ask", "ask_once", "never_ask"
+	DangerousToolsWarn  bool                     `json:"dangerous_tools_warn"`
+	AlwaysAskPermission bool                     `json:"always_ask_permission"` // If true, always prompt for permission regardless of saved settings
+	DisableColors       bool                     `json:"disable_colors"`        // If true, disable ANSI color output
+}
+
+// ModelProfile contains model-specific configuration
+type ModelProfile struct {
+	Model        string  `json:"model"`
+	Temperature  float64 `json:"temperature"`
+	MaxTokens    int     `json:"max_tokens"`
+	SystemPrompt string  `json:"system_prompt"`
+	Alias        string  `json:"alias"` // Short name for quick switching
 }
 
 // DefaultConfig returns a default configuration
@@ -41,6 +52,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		OllamaURL:           "http://localhost:11434/api",
 		DefaultModel:        "qwen2.5-coder:3b",
+		ModelProfiles:       getDefaultModelProfiles(),
 		SystemPrompt:        defaultSystemPrompt,
 		LogFile:             "logs/codezilla.log",
 		LogLevel:            "info",
@@ -51,6 +63,40 @@ func DefaultConfig() *Config {
 		DangerousToolsWarn:  true,
 		AlwaysAskPermission: false,
 		DisableColors:       false,
+	}
+}
+
+// getDefaultModelProfiles returns a set of default model profiles/
+func getDefaultModelProfiles() map[string]*ModelProfile {
+	return map[string]*ModelProfile{
+		"coder": {
+			Model:        "qwen2.5-coder:32b",
+			Temperature:  0.3,
+			MaxTokens:    4000,
+			SystemPrompt: defaultSystemPrompt,
+			Alias:        "code",
+		},
+		"general": {
+			Model:        "qwen3:14b",
+			Temperature:  0.7,
+			MaxTokens:    4000,
+			SystemPrompt: "You are a helpful AI assistant.",
+			Alias:        "chat",
+		},
+		"creative": {
+			Model:        "qwen3:14b",
+			Temperature:  0.9,
+			MaxTokens:    4000,
+			SystemPrompt: "You are a creative and imaginative AI assistant.",
+			Alias:        "write",
+		},
+		"analyze": {
+			Model:        "qwen3:14b",
+			Temperature:  0.1,
+			MaxTokens:    4000,
+			SystemPrompt: "You are a precise and analytical AI assistant focused on accuracy.",
+			Alias:        "think",
+		},
 	}
 }
 
@@ -292,6 +338,38 @@ func (a *App) ProcessInput(ctx context.Context, input string) error {
 		return a.HandleCommand(ctx, input)
 	}
 
+	// Check for inline model switching syntax @modelname or @profile
+	if strings.HasPrefix(input, "@") {
+		parts := strings.SplitN(input, " ", 2)
+		if len(parts) > 0 {
+			modelSpec := strings.TrimPrefix(parts[0], "@")
+
+			// Look for profile first
+			if profile, ok := a.Config.ModelProfiles[modelSpec]; ok {
+				// Switch to profile
+				a.switchToProfile(profile)
+				if len(parts) > 1 {
+					input = parts[1] // Continue with the rest of the input
+				} else {
+					fmt.Fprintf(a.Writer, "Switched to profile: %s (model: %s)\n", modelSpec, profile.Model)
+					return nil
+				}
+			} else {
+				// Try as direct model name
+				if err := a.setModel(ctx, modelSpec); err == nil {
+					if len(parts) > 1 {
+						input = parts[1] // Continue with the rest of the input
+					} else {
+						return nil
+					}
+				} else {
+					// Neither profile nor model found
+					return fmt.Errorf("unknown model or profile: %s", modelSpec)
+				}
+			}
+		}
+	}
+
 	// Process as a message to the agent
 	fmt.Fprint(a.Writer, style.ColorBold(style.ColorCodeGreen, "assistant> "))
 
@@ -360,9 +438,14 @@ func (a *App) HandleCommand(ctx context.Context, cmd string) error {
 		if args == "" {
 			fmt.Fprintf(a.Writer, "Current model: %s\n", style.ColorGreen(a.Config.DefaultModel))
 			fmt.Fprintln(a.Writer, "To change model, use: /model <model-name>")
+			fmt.Fprintln(a.Writer, "\nQuick model switching:")
+			fmt.Fprintln(a.Writer, "  @<profile>         - Switch to a profile (e.g., @coder)")
+			fmt.Fprintln(a.Writer, "  @<model> <query>   - Use a specific model inline")
 			return nil
 		}
 		return a.setModel(ctx, args)
+	case "/profiles":
+		return a.handleProfilesCommand(args)
 	case "/tools":
 		a.listTools()
 	case "/clear":
@@ -442,6 +525,30 @@ func (a *App) listModels(ctx context.Context) error {
 	return nil
 }
 
+// switchToProfile switches to a model profile
+func (a *App) switchToProfile(profile *ModelProfile) {
+	// Update config from profile
+	a.Config.DefaultModel = profile.Model
+	a.Config.Temperature = profile.Temperature
+	a.Config.MaxTokens = profile.MaxTokens
+
+	// Update the agent's model and configuration
+	a.Agent.SetModel(profile.Model)
+	a.Agent.SetTemperature(profile.Temperature)
+	a.Agent.SetMaxTokens(profile.MaxTokens)
+
+	// Re-initialize agent with new configuration if system prompt changed
+	if profile.SystemPrompt != "" && profile.SystemPrompt != a.Config.SystemPrompt {
+		a.Config.SystemPrompt = profile.SystemPrompt
+		// Clear context and add new system prompt
+		a.Agent.ClearContext()
+		a.Agent.AddSystemMessage(profile.SystemPrompt)
+	}
+
+	// Save the updated configuration
+	_ = SaveConfig(a.Config, "config.json")
+}
+
 // setModel changes the active model
 func (a *App) setModel(ctx context.Context, modelName string) error {
 	if modelName == "" {
@@ -519,6 +626,18 @@ func (a *App) printConfig() {
 		colorStatus = "disabled"
 	}
 	fmt.Fprintf(a.Writer, "Color output: %s\n", colorStatus)
+
+	// Check if we're using a profile
+	if a.Config.ModelProfiles != nil {
+		for name, profile := range a.Config.ModelProfiles {
+			if profile.Model == a.Config.DefaultModel &&
+				profile.Temperature == a.Config.Temperature &&
+				profile.MaxTokens == a.Config.MaxTokens {
+				fmt.Fprintf(a.Writer, "\nActive profile: %s\n", style.ColorGreen(name))
+				break
+			}
+		}
+	}
 }
 
 // handleConfigCommand handles configuration changes
@@ -596,6 +715,147 @@ func (a *App) handleConfigCommand(args string) error {
 	return nil
 }
 
+// handleProfilesCommand handles profile management commands
+func (a *App) handleProfilesCommand(args string) error {
+	parts := strings.Fields(args)
+
+	if len(parts) == 0 {
+		// List all profiles
+		a.listProfiles()
+		return nil
+	}
+
+	switch parts[0] {
+	case "add":
+		if len(parts) < 2 {
+			return fmt.Errorf("usage: /profiles add <name>")
+		}
+		return a.addProfile(parts[1])
+	case "remove":
+		if len(parts) < 2 {
+			return fmt.Errorf("usage: /profiles remove <name>")
+		}
+		return a.removeProfile(parts[1])
+	case "edit":
+		if len(parts) < 2 {
+			return fmt.Errorf("usage: /profiles edit <name>")
+		}
+		return a.editProfile(parts[1])
+	default:
+		return fmt.Errorf("unknown profiles command: %s", parts[0])
+	}
+}
+
+// listProfiles lists all available model profiles
+func (a *App) listProfiles() {
+	fmt.Fprintln(a.Writer, style.ColorBold(style.ColorCodeWhite, "Model Profiles:"))
+
+	if a.Config.ModelProfiles == nil || len(a.Config.ModelProfiles) == 0 {
+		fmt.Fprintln(a.Writer, "No profiles configured")
+		return
+	}
+
+	// Sort profiles by name for consistent display
+	var names []string
+	for name := range a.Config.ModelProfiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		profile := a.Config.ModelProfiles[name]
+		current := ""
+		if profile.Model == a.Config.DefaultModel {
+			current = style.ColorGreen(" (current)")
+		}
+
+		fmt.Fprintf(a.Writer, "\n%s%s:\n", style.ColorBold(style.ColorCodeCyan, name), current)
+		fmt.Fprintf(a.Writer, "  Model: %s\n", profile.Model)
+		fmt.Fprintf(a.Writer, "  Alias: %s\n", profile.Alias)
+		fmt.Fprintf(a.Writer, "  Temperature: %.2f\n", profile.Temperature)
+		fmt.Fprintf(a.Writer, "  Max Tokens: %d\n", profile.MaxTokens)
+		if profile.SystemPrompt != "" {
+			prompt := profile.SystemPrompt
+			if len(prompt) > 50 {
+				prompt = prompt[:47] + "..."
+			}
+			fmt.Fprintf(a.Writer, "  System Prompt: %s\n", prompt)
+		}
+	}
+}
+
+// addProfile adds a new model profile
+func (a *App) addProfile(name string) error {
+	if a.Config.ModelProfiles == nil {
+		a.Config.ModelProfiles = make(map[string]*ModelProfile)
+	}
+
+	if _, exists := a.Config.ModelProfiles[name]; exists {
+		return fmt.Errorf("profile '%s' already exists", name)
+	}
+
+	// Create a new profile with defaults
+	profile := &ModelProfile{
+		Model:        a.Config.DefaultModel,
+		Temperature:  a.Config.Temperature,
+		MaxTokens:    a.Config.MaxTokens,
+		SystemPrompt: a.Config.SystemPrompt,
+		Alias:        name,
+	}
+
+	a.Config.ModelProfiles[name] = profile
+
+	// Save configuration
+	if err := SaveConfig(a.Config, "config.json"); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	fmt.Fprintf(a.Writer, "Profile '%s' created with current settings\n", name)
+	fmt.Fprintln(a.Writer, "Use '/profiles edit "+name+"' to customize")
+	return nil
+}
+
+// removeProfile removes a model profile
+func (a *App) removeProfile(name string) error {
+	if a.Config.ModelProfiles == nil {
+		return fmt.Errorf("no profiles configured")
+	}
+
+	if _, exists := a.Config.ModelProfiles[name]; !exists {
+		return fmt.Errorf("profile '%s' not found", name)
+	}
+
+	delete(a.Config.ModelProfiles, name)
+
+	// Save configuration
+	if err := SaveConfig(a.Config, "config.json"); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	fmt.Fprintf(a.Writer, "Profile '%s' removed\n", name)
+	return nil
+}
+
+// editProfile edits a model profile (placeholder for now)
+func (a *App) editProfile(name string) error {
+	if a.Config.ModelProfiles == nil {
+		return fmt.Errorf("no profiles configured")
+	}
+
+	profile, exists := a.Config.ModelProfiles[name]
+	if !exists {
+		return fmt.Errorf("profile '%s' not found", name)
+	}
+
+	fmt.Fprintf(a.Writer, "Editing profile '%s':\n", name)
+	fmt.Fprintf(a.Writer, "Current settings:\n")
+	fmt.Fprintf(a.Writer, "  Model: %s\n", profile.Model)
+	fmt.Fprintf(a.Writer, "  Temperature: %.2f\n", profile.Temperature)
+	fmt.Fprintf(a.Writer, "  Max Tokens: %d\n", profile.MaxTokens)
+	fmt.Fprintln(a.Writer, "\nTo edit, manually update config.json for now")
+	return nil
+}
+
 // printVersion prints the current version
 func (a *App) printVersion() {
 	fmt.Fprintln(a.Writer, style.ColorBold(style.ColorCodeWhite, "Codezilla v0.1.0"))
@@ -610,6 +870,7 @@ func (a *App) printHelp() {
 	fmt.Fprintln(a.Writer, "  /help        - Show this help message")
 	fmt.Fprintln(a.Writer, "  /models      - List available models")
 	fmt.Fprintln(a.Writer, "  /model       - Show current model or change to a new model")
+	fmt.Fprintln(a.Writer, "  /profiles    - Manage model profiles (list, add, remove, edit)")
 	fmt.Fprintln(a.Writer, "  /tools       - List available tools")
 	fmt.Fprintln(a.Writer, "  /permissions - Manage tool permission settings")
 	fmt.Fprintln(a.Writer, "  /color       - Toggle color output (on/off)")
@@ -618,6 +879,15 @@ func (a *App) printHelp() {
 	fmt.Fprintln(a.Writer, "  /version     - Show version information")
 	fmt.Fprintln(a.Writer, "  /config      - Show or modify configuration")
 	fmt.Fprintln(a.Writer, "  exit         - Exit the application")
+	fmt.Fprintln(a.Writer, "")
+	fmt.Fprintln(a.Writer, "Quick Model Switching:")
+	fmt.Fprintln(a.Writer, "  @<profile>         - Switch to a model profile (e.g., @coder, @general)")
+	fmt.Fprintln(a.Writer, "  @<model> <query>   - Use a specific model for one query")
+	fmt.Fprintln(a.Writer, "")
+	fmt.Fprintln(a.Writer, "Examples:")
+	fmt.Fprintln(a.Writer, "  @coder How do I implement a binary search?")
+	fmt.Fprintln(a.Writer, "  @creative Write a poem about programming")
+	fmt.Fprintln(a.Writer, "  @analyze Explain the time complexity of this algorithm")
 }
 
 // printWelcome prints the welcome message

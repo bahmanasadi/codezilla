@@ -43,6 +43,12 @@ type Agent interface {
 
 	// SetModel changes the active model used by the agent
 	SetModel(model string)
+
+	// SetTemperature changes the temperature setting
+	SetTemperature(temperature float64)
+
+	// SetMaxTokens changes the max tokens setting
+	SetMaxTokens(maxTokens int)
 }
 
 // Config contains configuration for the agent
@@ -577,4 +583,16 @@ func (a *agent) SetModel(model string) {
 
 	// Update the model in the config
 	a.config.Model = model
+}
+
+// SetTemperature changes the temperature setting
+func (a *agent) SetTemperature(temperature float64) {
+	a.logger.Info("Changing temperature", "from", a.config.Temperature, "to", temperature)
+	a.config.Temperature = temperature
+}
+
+// SetMaxTokens changes the max tokens setting
+func (a *agent) SetMaxTokens(maxTokens int) {
+	a.logger.Info("Changing max tokens", "from", a.config.MaxTokens, "to", maxTokens)
+	a.config.MaxTokens = maxTokens
 }
