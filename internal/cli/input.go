@@ -16,16 +16,20 @@ import (
 
 // ANSI escape sequences for handling terminal input
 const (
-	escapeChar = '\x1b'
-	upArrow    = "[A"
-	downArrow  = "[B"
-	clearLine  = "\r\033[K" // Carriage return + clear line
-	moveUp     = "\033[1A"  // Move cursor up one line
-	clearDown  = "\033[J"   // Clear from cursor to end of screen
-	backspace  = '\x7f'     // DEL character
-	ctrlC      = '\x03'
-	ctrlW      = '\x17' // Delete previous word
-	ctrlU      = '\x15' // Clear entire line
+	escapeChar     = '\x1b'
+	upArrow        = "[A"
+	downArrow      = "[B"
+	rightArrow     = "[C"
+	leftArrow      = "[D"
+	ctrlLeftArrow  = "1;5D"     // CTRL + Left Arrow
+	ctrlRightArrow = "1;5C"     // CTRL + Right Arrow
+	clearLine      = "\r\033[K" // Carriage return + clear line
+	moveUp         = "\033[1A"  // Move cursor up one line
+	clearDown      = "\033[J"   // Clear from cursor to end of screen
+	backspace      = '\x7f'     // DEL character
+	ctrlC          = '\x03'
+	ctrlW          = '\x17' // Delete previous word
+	ctrlU          = '\x15' // Clear entire line
 )
 
 // InputReader provides an interface for reading user input
@@ -290,52 +294,135 @@ func (s *SimpleInput) ReadLine() (string, error) {
 			historyLen := len(s.history)
 			s.mu.Unlock()
 
-			// Handle arrow keys for history
-			switch string([]rune{next, direction}) {
-			case upArrow:
-				// Up arrow - show previous history item
-				if historyLen > 0 && s.historyIndex > 0 {
-					s.historyIndex--
-
-					// Get history item
-					s.mu.Lock()
-					historyItem := s.history[s.historyIndex]
-					s.mu.Unlock()
-
-					// Replace current input with history item
-					buf.Reset()
-					buf.WriteString(historyItem)
-					currentPos = buf.Len()
-
-					// Use the new clearing mechanism for multiline support
-					s.clearAndRedraw(historyItem, currentPos)
+			// Check for special escape sequences that have more characters
+			if direction == '1' {
+				// Could be a ctrl+arrow key
+				separator, _, err := s.reader.ReadRune()
+				if err != nil || separator != ';' {
+					continue
 				}
 
-			case downArrow:
-				// Down arrow - show next history item
-				if historyLen > 0 && s.historyIndex < historyLen-1 {
-					s.historyIndex++
+				ctrlKey, _, err := s.reader.ReadRune()
+				if err != nil || ctrlKey != '5' {
+					continue
+				}
 
-					// Get history item
-					s.mu.Lock()
-					historyItem := s.history[s.historyIndex]
-					s.mu.Unlock()
+				arrowKey, _, err := s.reader.ReadRune()
+				if err != nil {
+					continue
+				}
 
-					// Replace current input with history item
-					buf.Reset()
-					buf.WriteString(historyItem)
-					currentPos = buf.Len()
+				sequence := fmt.Sprintf("%c;%c%c", direction, ctrlKey, arrowKey)
 
-					// Use the new clearing mechanism for multiline support
-					s.clearAndRedraw(historyItem, currentPos)
-				} else if s.historyIndex == historyLen-1 {
-					// At the end of history, show empty line
-					s.historyIndex = historyLen
-					buf.Reset()
-					currentPos = 0
+				switch sequence {
+				case ctrlLeftArrow:
+					// Ctrl+Left arrow - move cursor to beginning of previous word
+					if currentPos > 0 {
+						line := buf.String()
 
-					// Use the new clearing mechanism for multiline support
-					s.clearAndRedraw(buf.String(), currentPos)
+						// Start from current position and move left
+						newPos := currentPos
+
+						// Skip any spaces before the current position
+						for newPos > 0 && newPos-1 < len(line) && line[newPos-1] == ' ' {
+							newPos--
+						}
+
+						// Skip until we find a space or beginning of line
+						for newPos > 0 && line[newPos-1] != ' ' {
+							newPos--
+						}
+
+						if newPos != currentPos {
+							currentPos = newPos
+							s.clearAndRedraw(line, currentPos)
+						}
+					}
+				case ctrlRightArrow:
+					// Ctrl+Right arrow - move cursor to beginning of next word
+					line := buf.String()
+					if currentPos < len(line) {
+						// Start from current position and move right
+						newPos := currentPos
+
+						// Skip until we find a space or end of line
+						for newPos < len(line) && line[newPos] != ' ' {
+							newPos++
+						}
+
+						// Skip any spaces
+						for newPos < len(line) && line[newPos] == ' ' {
+							newPos++
+						}
+
+						if newPos != currentPos {
+							currentPos = newPos
+							s.clearAndRedraw(line, currentPos)
+						}
+					}
+				}
+			} else {
+				// Handle regular arrow keys for navigation and history
+				switch string([]rune{next, direction}) {
+				case leftArrow:
+					// Left arrow - move cursor one character to the left
+					if currentPos > 0 {
+						currentPos--
+						s.clearAndRedraw(buf.String(), currentPos)
+					}
+
+				case rightArrow:
+					// Right arrow - move cursor one character to the right
+					if currentPos < buf.Len() {
+						currentPos++
+						s.clearAndRedraw(buf.String(), currentPos)
+					}
+
+				case upArrow:
+					// Up arrow - show previous history item
+					if historyLen > 0 && s.historyIndex > 0 {
+						s.historyIndex--
+
+						// Get history item
+						s.mu.Lock()
+						historyItem := s.history[s.historyIndex]
+						s.mu.Unlock()
+
+						// Replace current input with history item
+						buf.Reset()
+						buf.WriteString(historyItem)
+						currentPos = buf.Len()
+
+						// Use the new clearing mechanism for multiline support
+						s.clearAndRedraw(historyItem, currentPos)
+					}
+
+				case downArrow:
+					// Down arrow - show next history item
+					if historyLen > 0 && s.historyIndex < historyLen-1 {
+						s.historyIndex++
+
+						// Get history item
+						s.mu.Lock()
+						historyItem := s.history[s.historyIndex]
+						s.mu.Unlock()
+
+						// Replace current input with history item
+						buf.Reset()
+						buf.WriteString(historyItem)
+						currentPos = buf.Len()
+
+						// Use the new clearing mechanism for multiline support
+						s.clearAndRedraw(historyItem, currentPos)
+					} else if s.historyIndex == historyLen-1 {
+						// At the end of history, show empty line
+						s.historyIndex = historyLen
+						buf.Reset()
+						currentPos = 0
+
+						// Use the new clearing mechanism for multiline support
+						s.clearAndRedraw(buf.String(), currentPos)
+					}
 				}
 			}
 
