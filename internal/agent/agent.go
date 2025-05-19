@@ -153,10 +153,28 @@ func (a *agent) ProcessMessage(ctx context.Context, message string) (string, err
 
 	a.logger.Debug("Checking for tool calls in response")
 
-	// Check for tool usage in response
-	toolCall, remainingText, hasTool := a.extractToolCall(response)
-	if hasTool {
-		a.logger.Debug("Tool call detected",
+	var finalResponse = response
+	var remainingText string
+
+	// Loop to handle recursive tool calls until we reach a final response with no tools
+	maxIterations := 10 // Safety limit to prevent infinite loops
+	iterations := 0
+
+	for iterations < maxIterations {
+		iterations++
+
+		// Check for tool usage in response
+		toolCall, newRemainingText, hasTool := a.extractToolCall(finalResponse)
+		if !hasTool {
+			a.logger.Debug("No more tool calls detected, reached final response",
+				"iterations", iterations)
+			break
+		}
+
+		remainingText = newRemainingText
+
+		a.logger.Debug("Tool call detected in iteration",
+			"iteration", iterations,
 			"tool", toolCall.ToolName,
 			"params", fmt.Sprintf("%v", toolCall.Params))
 
@@ -177,31 +195,38 @@ func (a *agent) ProcessMessage(ctx context.Context, message string) (string, err
 		a.context.AddToolResultMessage(result, err)
 
 		// Generate follow-up response
-		a.logger.Debug("Generating follow-up response after tool execution")
+		a.logger.Debug("Generating follow-up response after tool execution",
+			"iteration", iterations)
 		followUpResponse, followUpErr := a.generateResponse(ctx)
 		if followUpErr != nil {
-			a.logger.Error("Failed to generate follow-up response", "error", followUpErr)
-			return response, nil // Return original response on error
+			a.logger.Error("Failed to generate follow-up response", "error", followUpErr,
+				"iteration", iterations)
+			// If we can't get a follow-up, use what we have so far
+			break
 		}
 
-		a.logger.Debug("Combining responses",
+		a.logger.Debug("Received follow-up response",
+			"iteration", iterations,
 			"hasRemainingText", remainingText != "",
 			"followUpLength", len(followUpResponse))
 
 		// Combine remaining text with follow-up
 		if remainingText != "" {
-			response = remainingText + "\n\n" + followUpResponse
+			finalResponse = remainingText + "\n\n" + followUpResponse
 		} else {
-			response = followUpResponse
+			finalResponse = followUpResponse
 		}
-	} else {
-		a.logger.Debug("No tool calls detected in response")
+	}
+
+	if iterations >= maxIterations {
+		a.logger.Warn("Reached maximum number of tool call iterations",
+			"maxIterations", maxIterations)
 	}
 
 	// Add assistant response to context
-	a.AddAssistantMessage(response)
+	a.AddAssistantMessage(finalResponse)
 
-	return response, nil
+	return finalResponse, nil
 }
 
 // generateResponse generates a response from the LLM using the Generate endpoint
