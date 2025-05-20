@@ -199,7 +199,7 @@ func (a *App) listPermissions() error {
 		formatPermissionLevel("always_ask"))
 	fmt.Fprintf(a.Writer, "  %s: %s\n",
 		style.ColorBold(style.ColorCodeCyan, "fileRead"),
-		formatPermissionLevel("ask_once"))
+		formatPermissionLevel("never_ask"))
 	fmt.Fprintf(a.Writer, "  %s: %s\n",
 		style.ColorBold(style.ColorCodeCyan, "other tools"),
 		formatPermissionLevel("always_ask"))

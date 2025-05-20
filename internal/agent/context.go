@@ -2,8 +2,11 @@ package agent
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+
+	"codezilla/pkg/logger"
 )
 
 // Role defines the role of a message in a conversation
@@ -44,6 +47,7 @@ type Context struct {
 	MaxTokens      int
 	CurrentTokens  int
 	TruncateOldest bool
+	logger         *logger.Logger
 }
 
 // NewContext creates a new conversation context
@@ -57,6 +61,7 @@ func NewContext(maxTokens int) *Context {
 		MaxTokens:      maxTokens,
 		CurrentTokens:  0,
 		TruncateOldest: true,
+		logger:         logger.DefaultLogger(),
 	}
 }
 
@@ -164,6 +169,7 @@ func (c *Context) AddMessage(msg Message) {
 		tokens += estimateValueTokens(msg.ToolResult.Result)
 	}
 
+	c.logger.Debug("Adding message to context", "role", string(msg.Role), "tokens", tokens, "currentTokens", c.CurrentTokens)
 	c.Messages = append(c.Messages, msg)
 	c.CurrentTokens += tokens
 
@@ -175,6 +181,7 @@ func (c *Context) AddMessage(msg Message) {
 
 // TruncateIfNeeded removes oldest non-system messages if context exceeds max tokens
 func (c *Context) TruncateIfNeeded() {
+	c.logger.Debug("Checking if context needs truncation", "currentTokens", c.CurrentTokens, "maxTokens", c.MaxTokens)
 	if c.CurrentTokens <= c.MaxTokens {
 		return
 	}
@@ -251,6 +258,7 @@ func (c *Context) TruncateIfNeeded() {
 
 // GetFormattedMessages returns messages formatted for the LLM
 func (c *Context) GetFormattedMessages() []map[string]interface{} {
+	c.logger.Debug("Formatting messages for LLM", "messageCount", len(c.Messages))
 	formatted := make([]map[string]interface{}, 0, len(c.Messages))
 
 	for _, msg := range c.Messages {
@@ -267,9 +275,9 @@ func (c *Context) GetFormattedMessages() []map[string]interface{} {
 				"params": msg.ToolCall.Params,
 			}
 		} else if msg.ToolResult != nil {
-			// Format tool results
+			// Format tool results as XML
 			if msg.ToolResult.Error != "" {
-				formattedMsg["content"] = fmt.Sprintf("Tool error: %s", msg.ToolResult.Error)
+				formattedMsg["content"] = fmt.Sprintf("<tool_result>\n  <error>%s</error>\n</tool_result>", escapeXML(msg.ToolResult.Error))
 			} else {
 				content := formatToolResult(msg.ToolResult.Result)
 				formattedMsg["content"] = content
@@ -285,7 +293,7 @@ func (c *Context) GetFormattedMessages() []map[string]interface{} {
 	return formatted
 }
 
-// formatToolResult formats a tool result for display in the conversation
+// formatToolResult formats a tool result for display in the conversation using XML
 func formatToolResult(result interface{}) string {
 	switch v := result.(type) {
 	case string:
@@ -293,15 +301,76 @@ func formatToolResult(result interface{}) string {
 	case []byte:
 		return string(v)
 	case map[string]interface{}:
-		// Format map as JSON-like string
-		parts := make([]string, 0, len(v))
-		for k, val := range v {
-			parts = append(parts, fmt.Sprintf("%q: %v", k, val))
+		// Format map as XML
+		var builder strings.Builder
+		builder.WriteString("<tool_result>\n")
+
+		// Sort the keys for consistent output
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
 		}
-		return fmt.Sprintf("{%s}", strings.Join(parts, ", "))
+		sort.Strings(keys)
+
+		// Add each field as an XML element
+		for _, k := range keys {
+			val := v[k]
+			builder.WriteString(fmt.Sprintf("  <%s>%v</%s>\n", k, formatXMLValue(val), k))
+		}
+
+		builder.WriteString("</tool_result>")
+		return builder.String()
+	default:
+		// For simple values, just return the string representation
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// formatXMLValue formats a value for inclusion in XML
+func formatXMLValue(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		// Escape XML special characters
+		return escapeXML(v)
+	case []interface{}:
+		// Format arrays as nested elements
+		var builder strings.Builder
+		builder.WriteString("\n")
+		for i, item := range v {
+			builder.WriteString(fmt.Sprintf("    <item index=\"%d\">%v</item>\n", i, formatXMLValue(item)))
+		}
+		builder.WriteString("  ")
+		return builder.String()
+	case map[string]interface{}:
+		// Format nested maps as nested XML
+		var builder strings.Builder
+		builder.WriteString("\n")
+
+		// Sort the keys for consistent output
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		for _, k := range keys {
+			builder.WriteString(fmt.Sprintf("    <%s>%v</%s>\n", k, formatXMLValue(v[k]), k))
+		}
+		builder.WriteString("  ")
+		return builder.String()
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+// escapeXML escapes XML special characters
+func escapeXML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
 }
 
 // estimateTokens provides a very rough estimate of token count for a string

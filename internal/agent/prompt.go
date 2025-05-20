@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"codezilla/internal/tools"
@@ -19,16 +19,16 @@ type PromptTemplate struct {
 // DefaultPromptTemplate returns the default prompt template
 func DefaultPromptTemplate() *PromptTemplate {
 	return &PromptTemplate{
-		SystemTemplate: `You are a helpful AI assistant with access to a set of tools. When you need to use a tool, format your response like this:
+		SystemTemplate: `You are a helpful AI assistant with access to a set of tools. When you need to use a tool, you MUST format your response using XML format like this:
 <tool>
-{
-  "name": "toolName",
-  "params": {
-    "param1": "value1",
-    "param2": "value2"
-  }
-}
+  <name>toolName</name>
+  <params>
+    <param1>value1</param1>
+    <param2>value2</param2>
+  </params>
 </tool>
+
+IMPORTANT: Always use the XML format shown above, NEVER use JSON format inside the tool tags. XML is required for proper tool execution.
 
 Wait for the tool response before continuing the conversation. The available tools are:
 
@@ -39,7 +39,8 @@ Remember:
 2. Use tools when needed to gather information or perform actions
 3. Don't make up information - use tools to get accurate data
 4. Always reply in markdown format
-5. Be concise and helpful`,
+5. Be concise and helpful
+6. ALWAYS use XML format for tool calls, not JSON`,
 
 		UserTemplate: `{{content}}`,
 
@@ -98,39 +99,70 @@ func formatToolSpecsForPrompt(specs []tools.ToolSpec) string {
 
 // FormatToolCallPrompt formats a tool call message for the LLM
 func FormatToolCallPrompt(toolCall *ToolCall) string {
-	// Format the tool call as JSON
-	paramsJSON, err := json.MarshalIndent(toolCall.Params, "  ", "  ")
-	if err != nil {
-		return fmt.Sprintf("<tool>\n{\n  \"name\": %q,\n  \"params\": {}\n}\n</tool>", toolCall.ToolName)
+	// Format the tool call as XML
+	var builder strings.Builder
+	builder.WriteString("<tool>\n")
+	builder.WriteString(fmt.Sprintf("  <name>%s</name>\n", escapeXML(toolCall.ToolName)))
+	builder.WriteString("  <params>\n")
+
+	// Add parameters
+	for paramName, paramValue := range toolCall.Params {
+		// Convert parameter value to string
+		var valueStr string
+		switch v := paramValue.(type) {
+		case string:
+			valueStr = escapeXML(v)
+		case []byte:
+			valueStr = escapeXML(string(v))
+		default:
+			valueStr = fmt.Sprintf("%v", paramValue)
+		}
+
+		builder.WriteString(fmt.Sprintf("    <%s>%s</%s>\n",
+			paramName, valueStr, paramName))
 	}
 
-	return fmt.Sprintf("<tool>\n{\n  \"name\": %q,\n  \"params\": %s\n}\n</tool>",
-		toolCall.ToolName, string(paramsJSON))
+	builder.WriteString("  </params>\n")
+	builder.WriteString("</tool>")
+
+	return builder.String()
 }
 
 // FormatToolResultPrompt formats a tool result message for the LLM
 func FormatToolResultPrompt(result interface{}, err error) string {
-	if err != nil {
-		return fmt.Sprintf("<tool-result>\nError: %s\n</tool-result>", err.Error())
-	}
+	var builder strings.Builder
+	builder.WriteString("<tool-result>\n")
 
-	// Format the result based on its type
-	var resultStr string
-	switch v := result.(type) {
-	case string:
-		resultStr = v
-	case []byte:
-		resultStr = string(v)
-	default:
-		resultJSON, err := json.MarshalIndent(result, "", "  ")
-		if err != nil {
-			resultStr = fmt.Sprintf("%v", result)
-		} else {
-			resultStr = string(resultJSON)
+	if err != nil {
+		builder.WriteString(fmt.Sprintf("  <error>%s</error>\n", escapeXML(err.Error())))
+	} else {
+		// Format the result based on its type
+		switch v := result.(type) {
+		case string:
+			builder.WriteString(fmt.Sprintf("  <content>%s</content>\n", escapeXML(v)))
+		case []byte:
+			builder.WriteString(fmt.Sprintf("  <content>%s</content>\n", escapeXML(string(v))))
+		case map[string]interface{}:
+			// Sort keys for consistent output
+			keys := make([]string, 0, len(v))
+			for k := range v {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+
+			// Add each field as an XML element
+			for _, k := range keys {
+				valueStr := fmt.Sprintf("%v", v[k])
+				builder.WriteString(fmt.Sprintf("  <%s>%s</%s>\n",
+					k, escapeXML(valueStr), k))
+			}
+		default:
+			builder.WriteString(fmt.Sprintf("  <value>%v</value>\n", v))
 		}
 	}
 
-	return fmt.Sprintf("<tool-result>\n%s\n</tool-result>", resultStr)
+	builder.WriteString("</tool-result>")
+	return builder.String()
 }
 
 // Helper function to check if a string slice contains a value
@@ -142,3 +174,5 @@ func contains(slice []string, value string) bool {
 	}
 	return false
 }
+
+// uses the escapeXML function from context.go

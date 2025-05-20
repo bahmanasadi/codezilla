@@ -261,8 +261,8 @@ func getInitialPermissionLevel(toolName string) PermissionLevel {
 		// Writing files is potentially dangerous, always ask
 		return AlwaysAsk
 	case "fileRead":
-		// Reading files is less dangerous, ask once
-		return AskOnce
+		// Reading files is safe, never ask
+		return NeverAsk
 	default:
 		// For unknown tools, default to always asking
 		return AlwaysAsk

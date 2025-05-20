@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -252,8 +254,8 @@ func (a *agent) generateResponse(ctx context.Context) (string, error) {
 		for _, tool := range a.toolRegistry.ListTools() {
 			toolsInfo += fmt.Sprintf("- %s: %s\n", tool.Name(), tool.Description())
 		}
-		toolsInfo += "\nWhen you need to use a tool, format your response like this:\n"
-		toolsInfo += "<tool>\n{\n  \"name\": \"toolName\",\n  \"params\": {\n    \"param1\": \"value1\",\n    \"param2\": \"value2\"\n  }\n}\n</tool>\n\n"
+		toolsInfo += "\nWhen you need to use a tool, format your response using XML like this:\n"
+		toolsInfo += "<tool>\n  <name>toolName</name>\n  <params>\n    <param1>value1</param1>\n    <param2>value2</param2>\n  </params>\n</tool>\n\n"
 	}
 
 	// First process system messages
@@ -381,7 +383,7 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 	matches := pattern.FindStringSubmatch(response)
 	if len(matches) < 2 {
 		// Try alternative pattern with backticks that might be used by LLMs
-		altPattern := regexp.MustCompile("(?s)```json[\\s\\n]*(.*?)[\\s\\n]*```")
+		altPattern := regexp.MustCompile("(?s)```xml[\\s\\n]*(.*?)[\\s\\n]*```")
 		matches = altPattern.FindStringSubmatch(response)
 
 		if len(matches) < 2 {
@@ -390,52 +392,47 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 		}
 	}
 
-	// Extract tool JSON
-	toolJSON := matches[1]
-	a.logger.Debug("Found potential tool call", "json", toolJSON)
+	// Extract tool XML content
+	toolXML := matches[1]
+	a.logger.Debug("Found potential tool call", "xml", toolXML)
 
-	// Clean up the JSON - remove any leading/trailing backticks or JSON formatting
-	toolJSON = strings.TrimPrefix(toolJSON, "```json")
-	toolJSON = strings.TrimSuffix(toolJSON, "```")
-	toolJSON = strings.TrimSpace(toolJSON)
+	// Clean up the XML - remove any leading/trailing backticks or formatting
+	toolXML = strings.TrimPrefix(toolXML, "```xml")
+	toolXML = strings.TrimSuffix(toolXML, "```")
+	toolXML = strings.TrimSpace(toolXML)
 
-	// Parse the tool call
-	var toolCall struct {
-		Name   string                 `json:"name"`
-		Params map[string]interface{} `json:"params"`
-	}
+	// Parse the XML to extract tool name and parameters
+	toolName := extractXMLElement(toolXML, "name")
+	if toolName == "" {
+		a.logger.Error("Tool call missing name field", "xml", toolXML)
 
-	err := json.Unmarshal([]byte(toolJSON), &toolCall)
-	if err != nil {
-		a.logger.Error("Failed to parse tool call", "error", err, "json", toolJSON)
-
-		// Try with more preprocessing of the JSON
-		toolJSON = strings.ReplaceAll(toolJSON, "\n", "")
-		toolJSON = strings.ReplaceAll(toolJSON, "\r", "")
-
-		// Try again with cleaned JSON
-		err = json.Unmarshal([]byte(toolJSON), &toolCall)
-		if err != nil {
-			a.logger.Error("Still failed to parse tool call after cleaning", "error", err)
-			return nil, response, false
+		// Try to handle legacy JSON format for backward compatibility
+		if strings.Contains(toolXML, "\"name\"") {
+			a.logger.Debug("Detected legacy JSON format, trying to parse as JSON")
+			return extractLegacyJSONToolCall(a, toolXML, response, pattern)
 		}
-	}
 
-	// Validate the tool call has required fields
-	if toolCall.Name == "" {
-		a.logger.Error("Tool call missing name field", "json", toolJSON)
 		return nil, response, false
 	}
 
-	if toolCall.Params == nil {
-		a.logger.Error("Tool call missing params field", "json", toolJSON)
+	// Extract params section
+	paramsSection := extractXMLElement(toolXML, "params")
+	if paramsSection == "" {
+		a.logger.Error("Tool call missing params section", "xml", toolXML)
+		return nil, response, false
+	}
+
+	// Parse parameters from params section
+	params := extractXMLParams(paramsSection, a.logger)
+	if params == nil {
+		a.logger.Error("Failed to extract parameters from tool call", "xml", toolXML)
 		return nil, response, false
 	}
 
 	// Create the ToolCall object
 	result := &ToolCall{
-		ToolName: toolCall.Name,
-		Params:   toolCall.Params,
+		ToolName: toolName,
+		Params:   params,
 	}
 
 	a.logger.Debug("Successfully extracted tool call",
@@ -465,15 +462,31 @@ func (a *agent) ExecuteTool(ctx context.Context, toolName string, params map[str
 		return nil, fmt.Errorf("%w: %s", ErrToolNotFound, toolName)
 	}
 
-	// Log tool execution start
+	// Log tool execution start in XML format
 	fmt.Fprintf(os.Stderr, "\n==== EXECUTING TOOL ====\n")
-	fmt.Fprintf(os.Stderr, "Tool: %s\n", toolName)
-	fmt.Fprintf(os.Stderr, "Description: %s\n", tool.Description())
+	fmt.Fprintf(os.Stderr, "<tool_execution>\n")
+	fmt.Fprintf(os.Stderr, "  <tool_name>%s</tool_name>\n", agentEscapeXML(toolName))
+	fmt.Fprintf(os.Stderr, "  <description>%s</description>\n", agentEscapeXML(tool.Description()))
 
-	// Format parameters for logging
-	paramsJSON, _ := json.MarshalIndent(params, "", "  ")
-	fmt.Fprintf(os.Stderr, "Parameters:\n%s\n", string(paramsJSON))
-	fmt.Fprintf(os.Stderr, "Start time: %s\n", time.Now().Format(time.RFC3339))
+	// Format parameters as XML
+	fmt.Fprintf(os.Stderr, "  <parameters>\n")
+
+	// Sort parameters for consistent output
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// Add each parameter as XML
+	for _, k := range keys {
+		v := params[k]
+		fmt.Fprintf(os.Stderr, "    <%s>%v</%s>\n", k, agentFormatXMLValue(v), k)
+	}
+
+	fmt.Fprintf(os.Stderr, "  </parameters>\n")
+	fmt.Fprintf(os.Stderr, "  <start_time>%s</start_time>\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "</tool_execution>\n")
 	fmt.Fprintf(os.Stderr, "=======================\n\n")
 
 	a.logger.Info("Executing tool", "tool", toolName, "params", params)
@@ -535,33 +548,29 @@ func (a *agent) ExecuteTool(ctx context.Context, toolName string, params map[str
 
 	// Log tool execution success
 	fmt.Fprintf(os.Stderr, "\n==== TOOL EXECUTION COMPLETED ====\n")
-	fmt.Fprintf(os.Stderr, "Tool: %s\n", toolName)
-	fmt.Fprintf(os.Stderr, "Duration: %s\n", duration.String())
+	fmt.Fprintf(os.Stderr, "<tool_result>\n")
+	fmt.Fprintf(os.Stderr, "  <tool_name>%s</tool_name>\n", agentEscapeXML(toolName))
+	fmt.Fprintf(os.Stderr, "  <duration>%s</duration>\n", duration.String())
 
-	// Format result for logging
-	var resultOutput string
-	resultJSON, err := json.MarshalIndent(result, "", "  ")
-	if err == nil {
-		resultOutput = string(resultJSON)
-	} else {
-		resultOutput = fmt.Sprintf("%v", result)
-	}
+	// Format result as XML inline
+	xmlOutput := formatToolResultAsXML(result, toolName)
 
 	// Truncate very large results for the log
-	if len(resultOutput) > 500 {
-		fmt.Fprintf(os.Stderr, "Result: %s...\n[result truncated, total length: %d bytes]\n",
-			resultOutput[:500], len(resultOutput))
+	if len(xmlOutput) > 500 {
+		fmt.Fprintf(os.Stderr, "  <result_truncated length=\"%d\">\n%s...\n  </result_truncated>\n",
+			len(xmlOutput), xmlOutput[:500])
 	} else {
-		fmt.Fprintf(os.Stderr, "Result: %s\n", resultOutput)
+		fmt.Fprintf(os.Stderr, "  <result>\n%s\n  </result>\n", xmlOutput)
 	}
 
-	fmt.Fprintf(os.Stderr, "Finish time: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "  <finish_time>%s</finish_time>\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "</tool_result>\n")
 	fmt.Fprintf(os.Stderr, "================================\n\n")
 
 	a.logger.Info("Tool executed successfully",
 		"tool", toolName,
 		"duration", duration.String(),
-		"resultSize", len(resultOutput))
+		"resultSize", len(xmlOutput))
 
 	return result, nil
 }
@@ -620,4 +629,213 @@ func (a *agent) SetTemperature(temperature float64) {
 func (a *agent) SetMaxTokens(maxTokens int) {
 	a.logger.Info("Changing max tokens", "from", a.config.MaxTokens, "to", maxTokens)
 	a.config.MaxTokens = maxTokens
+}
+
+// formatToolResultAsXML formats a tool result as XML for display
+func formatToolResultAsXML(result interface{}, toolName string) string {
+	var builder strings.Builder
+
+	switch v := result.(type) {
+	case string:
+		builder.WriteString(agentEscapeXML(v))
+	case []byte:
+		builder.WriteString(agentEscapeXML(string(v)))
+	case map[string]interface{}:
+		// Sort the keys for consistent output
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		// Add each field as an XML element
+		for _, k := range keys {
+			builder.WriteString(fmt.Sprintf("    <%s>%v</%s>\n", k, agentFormatXMLValue(v[k]), k))
+		}
+	default:
+		// For other types, just convert to string
+		builder.WriteString(fmt.Sprintf("    <value>%v</value>\n", v))
+	}
+
+	return builder.String()
+}
+
+// extractXMLElement extracts a specific element from an XML string
+func extractXMLElement(xmlStr string, elementName string) string {
+	// Pattern for matching XML tags, accounting for attributes and whitespace
+	pattern := regexp.MustCompile(fmt.Sprintf(`(?s)<%s[^>]*>(.*?)</%s>`, elementName, elementName))
+	matches := pattern.FindStringSubmatch(xmlStr)
+
+	if len(matches) < 2 {
+		// Try a self-closing tag pattern
+		selfClosingPattern := regexp.MustCompile(fmt.Sprintf(`<%s[^>]*/?>`, elementName))
+		if selfClosingPattern.MatchString(xmlStr) {
+			return "" // Self-closing tag has no content
+		}
+		return "" // Element not found
+	}
+
+	// Return the content between opening and closing tags, trimmed
+	return strings.TrimSpace(matches[1])
+}
+
+// extractXMLParams parses parameters from XML params section
+func extractXMLParams(paramsXML string, logger *logger.Logger) map[string]interface{} {
+	params := make(map[string]interface{})
+
+	// Pattern for finding all XML elements at the top level
+	elementPattern := regexp.MustCompile(`(?s)<([a-zA-Z0-9_-]+)[^>]*>(.*?)</\1>`)
+	matches := elementPattern.FindAllStringSubmatch(paramsXML, -1)
+
+	if len(matches) == 0 {
+		return nil
+	}
+
+	// Extract each parameter
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+
+		paramName := match[1]
+		paramValue := strings.TrimSpace(match[2])
+
+		// Try to convert to appropriate types (boolean, number, etc.)
+		switch {
+		case paramValue == "true" || paramValue == "false":
+			// Boolean
+			params[paramName] = paramValue == "true"
+			logger.Debug("Parsed XML parameter as boolean", "name", paramName, "value", params[paramName])
+
+		case regexp.MustCompile(`^-?\d+$`).MatchString(paramValue):
+			// Integer
+			intVal, err := strconv.Atoi(paramValue)
+			if err == nil {
+				params[paramName] = intVal
+				logger.Debug("Parsed XML parameter as integer", "name", paramName, "value", params[paramName])
+			} else {
+				params[paramName] = paramValue
+				logger.Debug("Failed to parse numeric value, using as string", "name", paramName, "value", paramValue)
+			}
+
+		case regexp.MustCompile(`^-?\d+\.\d+$`).MatchString(paramValue):
+			// Float
+			floatVal, err := strconv.ParseFloat(paramValue, 64)
+			if err == nil {
+				params[paramName] = floatVal
+				logger.Debug("Parsed XML parameter as float", "name", paramName, "value", params[paramName])
+			} else {
+				params[paramName] = paramValue
+				logger.Debug("Failed to parse float value, using as string", "name", paramName, "value", paramValue)
+			}
+
+		default:
+			// String
+			params[paramName] = paramValue
+			logger.Debug("Parsed XML parameter as string", "name", paramName, "value", paramValue)
+		}
+	}
+
+	return params
+}
+
+// formatXMLValue formats a value for inclusion in XML
+func agentFormatXMLValue(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		// Escape XML special characters
+		return agentEscapeXML(v)
+	case []interface{}:
+		// Format arrays as nested elements
+		var builder strings.Builder
+		builder.WriteString("\n")
+		for i, item := range v {
+			builder.WriteString(fmt.Sprintf("    <item index=\"%d\">%v</item>\n", i, agentFormatXMLValue(item)))
+		}
+		builder.WriteString("  ")
+		return builder.String()
+	case map[string]interface{}:
+		// Format nested maps as nested XML
+		var builder strings.Builder
+		builder.WriteString("\n")
+
+		// Sort the keys for consistent output
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		for _, k := range keys {
+			builder.WriteString(fmt.Sprintf("    <%s>%v</%s>\n", k, agentFormatXMLValue(v[k]), k))
+		}
+		builder.WriteString("  ")
+		return builder.String()
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// extractLegacyJSONToolCall handles legacy JSON format for backward compatibility
+func extractLegacyJSONToolCall(a *agent, toolJSON string, response string, pattern *regexp.Regexp) (*ToolCall, string, bool) {
+	a.logger.Debug("Attempting to parse legacy JSON tool call", "json", toolJSON)
+
+	// Parse the tool call
+	var toolCall struct {
+		Name   string                 `json:"name"`
+		Params map[string]interface{} `json:"params"`
+	}
+
+	err := json.Unmarshal([]byte(toolJSON), &toolCall)
+	if err != nil {
+		a.logger.Error("Failed to parse legacy JSON tool call", "error", err, "json", toolJSON)
+
+		// Try with preprocessing
+		toolJSON = strings.ReplaceAll(toolJSON, "\n", "")
+		toolJSON = strings.ReplaceAll(toolJSON, "\r", "")
+
+		// Try again with cleaned JSON
+		err = json.Unmarshal([]byte(toolJSON), &toolCall)
+		if err != nil {
+			a.logger.Error("Failed to parse legacy JSON after cleaning", "error", err)
+			return nil, response, false
+		}
+	}
+
+	// Validate the tool call has required fields
+	if toolCall.Name == "" {
+		a.logger.Error("Legacy JSON tool call missing name field", "json", toolJSON)
+		return nil, response, false
+	}
+
+	if toolCall.Params == nil {
+		a.logger.Error("Legacy JSON tool call missing params field", "json", toolJSON)
+		return nil, response, false
+	}
+
+	// Create the ToolCall object
+	result := &ToolCall{
+		ToolName: toolCall.Name,
+		Params:   toolCall.Params,
+	}
+
+	a.logger.Debug("Successfully extracted legacy JSON tool call",
+		"toolName", result.ToolName,
+		"paramsCount", len(result.Params))
+
+	// Remove the tool section from the response
+	remainingText := pattern.ReplaceAllString(response, "")
+	remainingText = strings.TrimSpace(remainingText)
+
+	return result, remainingText, true
+}
+
+// escapeXML escapes XML special characters
+func agentEscapeXML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
 }
