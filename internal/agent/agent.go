@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -371,10 +373,24 @@ func (a *agent) generateResponse(ctx context.Context) (string, error) {
 	return cleanResponse, nil
 }
 
+// XMLToolCall represents the XML structure for tool calls
+type XMLToolCall struct {
+	Name   string    `xml:"name,n"` // Accept both <n> and <n> tags
+	Params XMLParams `xml:"params"`
+}
+
+// XMLParams represents the dynamic parameters in XML
+type XMLParams struct {
+	XMLData []byte `xml:",innerxml"`
+}
+
 // extractToolCall extracts a tool call from the response
 func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 	// Log for debugging purposes
 	a.logger.Debug("Checking for tool calls in response", "responseLength", len(response))
+
+	// Add more debug logging when fixing tool detection
+	a.logger.Debug("Full response for tool detection", "response", response)
 
 	// Pattern to match <tool>...</tool> sections, more flexible with whitespace and formatting
 	pattern := regexp.MustCompile(`(?s)<tool>[\s\n]*(.*?)[\s\n]*</tool>`)
@@ -387,13 +403,36 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 		matches = altPattern.FindStringSubmatch(response)
 
 		if len(matches) < 2 {
-			a.logger.Debug("No tool call patterns found in response")
-			return nil, response, false
+			// If still no matches, look for any <n> tag for backward compatibility
+			directToolPattern := regexp.MustCompile(`(?s)<n>\s*(.*?)\s*</n>`)
+			matches = directToolPattern.FindStringSubmatch(response)
+
+			if len(matches) >= 2 {
+				// Found a direct tool call, wrap it in a tool tag structure
+				toolName := matches[1]
+				a.logger.Debug("Found direct <n> tag", "toolName", toolName)
+
+				// Find the parameters section
+				paramsMatch := regexp.MustCompile(`(?s)<params>(.*?)</params>`).FindStringSubmatch(response)
+				if len(paramsMatch) >= 2 {
+					// Reconstruct into proper tool XML format
+					toolXML := fmt.Sprintf("<n>%s</n>\n<params>%s</params>",
+						toolName, paramsMatch[1])
+					matches[1] = toolXML
+					a.logger.Debug("Reconstructed tool call from direct tag", "toolXML", toolXML)
+				} else {
+					a.logger.Debug("No params section found for direct tool tag")
+					return nil, response, false
+				}
+			} else {
+				a.logger.Debug("No tool call patterns found in response")
+				return nil, response, false
+			}
 		}
 	}
 
 	// Extract tool XML content
-	toolXML := matches[1]
+	toolXML := matches[0]
 	a.logger.Debug("Found potential tool call", "xml", toolXML)
 
 	// Clean up the XML - remove any leading/trailing backticks or formatting
@@ -401,10 +440,57 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 	toolXML = strings.TrimSuffix(toolXML, "```")
 	toolXML = strings.TrimSpace(toolXML)
 
-	// Parse the XML to extract tool name and parameters
+	// Ensure XML has root element
+	if !strings.HasPrefix(toolXML, "<") {
+		toolXML = "<tool>" + toolXML + "</tool>"
+	}
+
+	// Try standard XML parsing first
+	var xmlToolCall XMLToolCall
+	err := xml.Unmarshal([]byte(toolXML), &xmlToolCall)
+
+	// Add more debug logging for XML parsing
+	a.logger.Debug("Attempting to parse XML", "toolXML", toolXML, "error", err,
+		"extractedName", xmlToolCall.Name)
+
+	if err == nil && xmlToolCall.Name != "" {
+		// Successfully parsed XML
+		a.logger.Debug("Successfully parsed tool call with standard XML parser",
+			"toolName", xmlToolCall.Name)
+
+		// Parse the parameters from inner XML
+		params, err := parseXMLParams(xmlToolCall.Params.XMLData, a.logger)
+		if err != nil {
+			a.logger.Error("Failed to parse parameters", "error", err)
+			return nil, response, false
+		}
+
+		// Create the ToolCall object
+		result := &ToolCall{
+			ToolName: xmlToolCall.Name,
+			Params:   params,
+		}
+
+		a.logger.Debug("Successfully extracted tool call",
+			"toolName", result.ToolName,
+			"paramsCount", len(result.Params))
+
+		// Remove the tool section from the response
+		remainingText := pattern.ReplaceAllString(response, "")
+		remainingText = strings.TrimSpace(remainingText)
+
+		return result, remainingText, true
+	}
+
+	// If standard parsing failed, try fallback methods
+	a.logger.Debug("Standard XML parsing failed, trying fallback methods", "error", err)
+
+	// Try legacy approach
 	toolName := extractXMLElement(toolXML, "name")
 	if toolName == "" {
-		a.logger.Error("Tool call missing name field", "xml", toolXML)
+		// We should not see missing name field errors anymore with our improved extraction
+		// but we'll still log it for debugging purposes
+		a.logger.Debug("Tool name extracted as empty, this should not happen with improved extraction", "xml", toolXML)
 
 		// Try to handle legacy JSON format for backward compatibility
 		if strings.Contains(toolXML, "\"name\"") {
@@ -435,7 +521,7 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 		Params:   params,
 	}
 
-	a.logger.Debug("Successfully extracted tool call",
+	a.logger.Debug("Successfully extracted tool call using fallback method",
 		"toolName", result.ToolName,
 		"paramsCount", len(result.Params))
 
@@ -662,43 +748,186 @@ func formatToolResultAsXML(result interface{}, toolName string) string {
 
 // extractXMLElement extracts a specific element from an XML string
 func extractXMLElement(xmlStr string, elementName string) string {
-	// Pattern for matching XML tags, accounting for attributes and whitespace
-	pattern := regexp.MustCompile(fmt.Sprintf(`(?s)<%s[^>]*>(.*?)</%s>`, elementName, elementName))
-	matches := pattern.FindStringSubmatch(xmlStr)
+	// First try the requested element name
+	result := tryExtractXMLElement(xmlStr, elementName)
 
-	if len(matches) < 2 {
-		// Try a self-closing tag pattern
-		selfClosingPattern := regexp.MustCompile(fmt.Sprintf(`<%s[^>]*/?>`, elementName))
-		if selfClosingPattern.MatchString(xmlStr) {
-			return "" // Self-closing tag has no content
-		}
+	// If we're looking for "name" and didn't find it, try "n" as an alternative
+	if result == "" && elementName == "name" {
+		result = tryExtractXMLElement(xmlStr, "n")
+	}
+
+	return result
+}
+
+// tryExtractXMLElement attempts to extract a specific XML element by name
+func tryExtractXMLElement(xmlStr string, elementName string) string {
+	// Create patterns for opening and closing tags
+	openTag := regexp.MustCompile(fmt.Sprintf(`<%s[^>]*>`, regexp.QuoteMeta(elementName)))
+	closeTag := regexp.MustCompile(fmt.Sprintf(`</%s>`, regexp.QuoteMeta(elementName)))
+
+	// First check if it's a self-closing tag
+	selfClosingPattern := regexp.MustCompile(fmt.Sprintf(`<%s[^>]*/?>`, regexp.QuoteMeta(elementName)))
+	if selfClosingPattern.MatchString(xmlStr) {
+		return "" // Self-closing tag has no content
+	}
+
+	// Find positions of opening and closing tags
+	openMatches := openTag.FindStringIndex(xmlStr)
+	closeMatches := closeTag.FindStringIndex(xmlStr)
+
+	// Check if we found both tags
+	if openMatches == nil || closeMatches == nil {
 		return "" // Element not found
 	}
 
+	// Extract content between tags
+	openEnd := openMatches[1]     // End position of opening tag
+	closeStart := closeMatches[0] // Start position of closing tag
+
+	// Validate positions
+	if openEnd >= closeStart || openEnd >= len(xmlStr) || closeStart > len(xmlStr) {
+		return "" // Invalid positions
+	}
+
 	// Return the content between opening and closing tags, trimmed
-	return strings.TrimSpace(matches[1])
+	return strings.TrimSpace(xmlStr[openEnd:closeStart])
 }
 
-// extractXMLParams parses parameters from XML params section
+// parseXMLParams parses parameters from XML data using Go's standard XML package
+func parseXMLParams(xmlData []byte, logger *logger.Logger) (map[string]interface{}, error) {
+	params := make(map[string]interface{})
+
+	// Create a decoder for the XML data
+	decoder := xml.NewDecoder(strings.NewReader(string(xmlData)))
+
+	var currentElement string
+
+	// Process XML tokens
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			logger.Error("Error parsing XML parameters", "error", err)
+			return nil, err
+		}
+
+		switch t := token.(type) {
+		case xml.StartElement:
+			// We're starting a new element
+			currentElement = t.Name.Local
+
+		case xml.EndElement:
+			// Element is closing, clear current element if it matches
+			if t.Name.Local == currentElement {
+				currentElement = ""
+			}
+
+		case xml.CharData:
+			// We have character data (the parameter value)
+			if currentElement != "" && currentElement != "params" {
+				// Convert value to string and trim whitespace
+				paramValue := strings.TrimSpace(string(t))
+
+				// Skip empty values
+				if paramValue == "" {
+					continue
+				}
+
+				// Try to convert to appropriate types
+				switch {
+				case paramValue == "true" || paramValue == "false":
+					// Boolean
+					params[currentElement] = paramValue == "true"
+					logger.Debug("Parsed XML parameter as boolean", "name", currentElement, "value", params[currentElement])
+
+				case regexp.MustCompile(`^-?\d+$`).MatchString(paramValue):
+					// Integer
+					intVal, err := strconv.Atoi(paramValue)
+					if err == nil {
+						params[currentElement] = intVal
+						logger.Debug("Parsed XML parameter as integer", "name", currentElement, "value", params[currentElement])
+					} else {
+						params[currentElement] = paramValue
+						logger.Debug("Failed to parse numeric value, using as string", "name", currentElement, "value", paramValue)
+					}
+
+				case regexp.MustCompile(`^-?\d+\.\d+$`).MatchString(paramValue):
+					// Float
+					floatVal, err := strconv.ParseFloat(paramValue, 64)
+					if err == nil {
+						params[currentElement] = floatVal
+						logger.Debug("Parsed XML parameter as float", "name", currentElement, "value", params[currentElement])
+					} else {
+						params[currentElement] = paramValue
+						logger.Debug("Failed to parse float value, using as string", "name", currentElement, "value", paramValue)
+					}
+
+				default:
+					// String
+					params[currentElement] = paramValue
+					logger.Debug("Parsed XML parameter as string", "name", currentElement, "value", paramValue)
+				}
+			}
+		}
+	}
+
+	return params, nil
+}
+
+// extractXMLParams is the fallback method for parsing parameters when standard XML parsing fails
 func extractXMLParams(paramsXML string, logger *logger.Logger) map[string]interface{} {
 	params := make(map[string]interface{})
 
-	// Pattern for finding all XML elements at the top level
-	elementPattern := regexp.MustCompile(`(?s)<([a-zA-Z0-9_-]+)[^>]*>(.*?)</\1>`)
-	matches := elementPattern.FindAllStringSubmatch(paramsXML, -1)
+	// Simple name pattern for XML element names
+	namePattern := regexp.MustCompile(`<([a-zA-Z0-9_-]+)[^>]*>`)
 
-	if len(matches) == 0 {
+	// Parse parameters using a more robust approach without backreferences
+	// Get all potential parameter names first
+	potentialNames := namePattern.FindAllStringSubmatch(paramsXML, -1)
+	if len(potentialNames) == 0 {
 		return nil
 	}
 
-	// Extract each parameter
-	for _, match := range matches {
-		if len(match) < 3 {
+	// Process each potential parameter
+	for _, nameMatch := range potentialNames {
+		if len(nameMatch) < 2 {
 			continue
 		}
 
-		paramName := match[1]
-		paramValue := strings.TrimSpace(match[2])
+		paramName := nameMatch[1]
+
+		// Skip if this is not a direct child element of params (could be nested)
+		// or if we already processed this parameter
+		if _, exists := params[paramName]; exists || paramName == "params" {
+			continue
+		}
+
+		// Create patterns specific to this parameter name
+		openTag := regexp.MustCompile(fmt.Sprintf(`<%s[^>]*>`, regexp.QuoteMeta(paramName)))
+		closeTag := regexp.MustCompile(fmt.Sprintf(`</%s>`, regexp.QuoteMeta(paramName)))
+
+		// Find the positions of opening and closing tags
+		openMatches := openTag.FindAllStringIndex(paramsXML, -1)
+		closeMatches := closeTag.FindAllStringIndex(paramsXML, -1)
+
+		// Skip if we can't find a matching pair
+		if len(openMatches) == 0 || len(closeMatches) == 0 {
+			continue
+		}
+
+		// Take the first occurrence for simplicity
+		openPos := openMatches[0][1]   // End position of opening tag
+		closePos := closeMatches[0][0] // Start position of closing tag
+
+		// Check if we have valid positions for extraction
+		if openPos >= closePos || openPos >= len(paramsXML) || closePos > len(paramsXML) {
+			continue
+		}
+
+		// Extract the parameter value
+		paramValue := strings.TrimSpace(paramsXML[openPos:closePos])
 
 		// Try to convert to appropriate types (boolean, number, etc.)
 		switch {

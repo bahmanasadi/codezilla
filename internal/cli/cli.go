@@ -919,6 +919,7 @@ func registerDefaultTools(registry tools.ToolRegistry) {
 	// Register file tools
 	registry.RegisterTool(tools.NewFileReadTool())
 	registry.RegisterTool(tools.NewFileWriteTool())
+	registry.RegisterTool(tools.NewListFilesTool()) // Add our new tool for recursive file listing
 
 	// Register shell execution tool
 	registry.RegisterTool(tools.NewExecuteTool(30 * time.Second))
@@ -959,14 +960,12 @@ You have the following tools available:
 {{tools}}
 
 GUIDELINES:
-1. When using tools, you MUST format your response using <tool> tags exactly as shown below:
+1. When using tools, you MUST format your response using XML format with <tool> tags exactly as shown below:
    <tool>
-   {
-     "name": "execute",
-     "params": {
-       "command": "ls -la"
-     }
-   }
+     <name>execute</name>
+     <params>
+       <command>ls -la</command>
+     </params>
    </tool>
 
 2. Think through problems step by step
@@ -980,22 +979,29 @@ GUIDELINES:
 EXAMPLES:
 - To execute a shell command:
   <tool>
-  {
-    "name": "execute",
-    "params": {
-      "command": "ls -la"
-    }
-  }
+    <name>execute</name>
+    <params>
+      <command>ls -la</command>
+    </params>
   </tool>
 
 - To read a file:
   <tool>
-  {
-    "name": "fileRead",
-    "params": {
-      "file_path": "/path/to/file.txt"
-    }
-  }
+    <name>fileRead</name>
+    <params>
+      <file_path>/path/to/file.txt</file_path>
+    </params>
   </tool>
 
-Remember that you're running on a local machine with access to the filesystem and shell commands. Be responsible with these capabilities.`
+- To recursively list files:
+  <tool>
+    <name>listFiles</name>
+    <params>
+      <dir>/path/to/directory</dir>
+      <pattern>*.go</pattern>
+      <maxDepth>3</maxDepth>
+    </params>
+  </tool>
+
+Remember that you're running on a local machine with access to the filesystem and shell commands. Be responsible with these capabilities.
+When searching for files, prefer using the listFiles tool rather than shell commands like 'find' or 'ls'.`
