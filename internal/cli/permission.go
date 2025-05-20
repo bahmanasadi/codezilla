@@ -201,6 +201,9 @@ func (a *App) listPermissions() error {
 		style.ColorBold(style.ColorCodeCyan, "fileRead"),
 		formatPermissionLevel("never_ask"))
 	fmt.Fprintf(a.Writer, "  %s: %s\n",
+		style.ColorBold(style.ColorCodeCyan, "listFiles"),
+		formatPermissionLevel("never_ask"))
+	fmt.Fprintf(a.Writer, "  %s: %s\n",
 		style.ColorBold(style.ColorCodeCyan, "other tools"),
 		formatPermissionLevel("always_ask"))
 

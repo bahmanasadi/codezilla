@@ -263,6 +263,9 @@ func getInitialPermissionLevel(toolName string) PermissionLevel {
 	case "fileRead":
 		// Reading files is safe, never ask
 		return NeverAsk
+	case "listFiles":
+		// Listing files is safe, never ask
+		return NeverAsk
 	default:
 		// For unknown tools, default to always asking
 		return AlwaysAsk
