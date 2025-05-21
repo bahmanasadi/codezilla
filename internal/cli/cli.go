@@ -908,7 +908,7 @@ func (a *App) handleProfilesCommand(args string) error {
 func (a *App) listProfiles() {
 	fmt.Fprintln(a.Writer, style.ColorBold(style.ColorCodeWhite, "Model Profiles:"))
 
-	if a.Config.ModelProfiles == nil || len(a.Config.ModelProfiles) == 0 {
+	if len(a.Config.ModelProfiles) == 0 {
 		fmt.Fprintln(a.Writer, "No profiles configured")
 		return
 	}
@@ -1080,6 +1080,10 @@ func registerDefaultTools(registry tools.ToolRegistry) {
 	registry.RegisterTool(tools.NewFileWriteTool())
 	registry.RegisterTool(tools.NewListFilesTool()) // Add our new tool for recursive file listing
 
+	// Register batch/efficient file operations
+	registry.RegisterTool(tools.NewFileReadBatchTool()) // Batch file reading
+	registry.RegisterTool(tools.NewProjectScanTool())   // Combined list and read for project analysis
+
 	// Register shell execution tool
 	registry.RegisterTool(tools.NewExecuteTool(30 * time.Second))
 }
@@ -1162,5 +1166,45 @@ EXAMPLES:
     </params>
   </tool>
 
+- To read multiple files efficiently:
+  <tool>
+    <name>fileReadBatch</name>
+    <params>
+      <file_paths>["file1.go", "file2.go", "file3.go"]</file_paths>
+      <continue_on_error>true</continue_on_error>
+    </params>
+  </tool>
+
+- To scan and analyze a project structure (scans all files by default):
+  <tool>
+    <name>projectScan</name>
+    <params>
+      <dir>/path/to/project</dir>
+      <readContents>true</readContents>
+      <maxFileSize>1048576</maxFileSize>
+    </params>
+  </tool>
+
+- To scan only specific file types:
+  <tool>
+    <name>projectScan</name>
+    <params>
+      <dir>/path/to/project</dir>
+      <pattern>*.{go,js,py}</pattern>
+      <readContents>true</readContents>
+    </params>
+  </tool>
+
 Remember that you're running on a local machine with access to the filesystem and shell commands. Be responsible with these capabilities.
-When searching for files, prefer using the listFiles tool rather than shell commands like 'find' or 'ls'.`
+EFFICIENCY GUIDELINES:
+- When listing files and then reading them, use projectScan or fileReadBatch instead of separate operations
+- For project analysis, prefer projectScan which scans all files by default with smart exclusions
+- projectScan automatically excludes common build artifacts, dependencies, and temporary files
+- Use fileReadBatch when you have specific files to read rather than reading them one by one
+- Only add pattern filters to projectScan when you need to focus on specific file types
+
+MARKDOWN ANALYSIS:
+- All file reading tools now analyze markdown files for executable shell/bash commands
+- Results include metadata about shell commands found in markdown code blocks
+- projectScan identifies README files and documentation with executable examples
+- Look for 'has_shell_commands', 'shell_commands', and 'command_types' in metadata`

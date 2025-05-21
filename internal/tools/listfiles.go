@@ -49,6 +49,16 @@ func (t *ListFilesTool) ParameterSchema() JSONSchema {
 				Description: "Whether to include hidden files and directories",
 				Default:     false,
 			},
+			"readContents": {
+				Type:        "boolean",
+				Description: "Whether to also read file contents (use projectScan for better performance with many files)",
+				Default:     false,
+			},
+			"maxFileSize": {
+				Type:        "integer",
+				Description: "Maximum file size to read when readContents is true (default: 1MB)",
+				Default:     1024 * 1024,
+			},
 		},
 		Required: []string{},
 	}
@@ -82,11 +92,23 @@ func (t *ListFilesTool) Execute(ctx context.Context, params map[string]interface
 		includeHidden = val
 	}
 
+	readContents := false
+	if val, ok := params["readContents"].(bool); ok {
+		readContents = val
+	}
+
 	maxDepth := 0
 	if val, ok := params["maxDepth"].(float64); ok {
 		maxDepth = int(val)
 	} else if val, ok := params["maxDepth"].(int); ok {
 		maxDepth = val
+	}
+
+	maxFileSize := int64(1024 * 1024) // 1MB default
+	if val, ok := params["maxFileSize"].(float64); ok {
+		maxFileSize = int64(val)
+	} else if val, ok := params["maxFileSize"].(int); ok {
+		maxFileSize = int64(val)
 	}
 
 	// Find files recursively
@@ -95,7 +117,12 @@ func (t *ListFilesTool) Execute(ctx context.Context, params map[string]interface
 		return nil, fmt.Errorf("error listing files: %w", err)
 	}
 
-	// Return the result
+	// If reading contents is requested, enhance the result
+	if readContents {
+		return t.createEnhancedResult(ctx, dir, files, maxFileSize)
+	}
+
+	// Return the simple result
 	result := map[string]interface{}{
 		"directory": dir,
 		"files":     files,
@@ -168,4 +195,79 @@ func findFiles(root, pattern string, maxDepth int, includeHidden bool) ([]string
 	}
 
 	return files, nil
+}
+
+// EnhancedFileResult represents a file with optional content
+type EnhancedFileResult struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	Content string `json:"content,omitempty"`
+	Error   string `json:"error,omitempty"`
+	WasRead bool   `json:"was_read"`
+}
+
+// createEnhancedResult creates a result that includes file contents
+func (t *ListFilesTool) createEnhancedResult(ctx context.Context, dir string, filePaths []string, maxFileSize int64) (interface{}, error) {
+	enhancedFiles := make([]EnhancedFileResult, 0, len(filePaths))
+	var totalSize int64
+	readCount := 0
+	skipCount := 0
+
+	for _, filePath := range filePaths {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		fileResult := EnhancedFileResult{
+			Path: filePath,
+		}
+
+		// Get file info
+		fileInfo, err := os.Stat(filePath)
+		if err != nil {
+			fileResult.Error = fmt.Sprintf("Failed to stat file: %v", err)
+			enhancedFiles = append(enhancedFiles, fileResult)
+			skipCount++
+			continue
+		}
+
+		fileResult.Size = fileInfo.Size()
+		totalSize += fileInfo.Size()
+
+		// Check if file is too large
+		if fileInfo.Size() > maxFileSize {
+			fileResult.Error = fmt.Sprintf("File too large (%d bytes > %d limit)", fileInfo.Size(), maxFileSize)
+			enhancedFiles = append(enhancedFiles, fileResult)
+			skipCount++
+			continue
+		}
+
+		// Read file content
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			fileResult.Error = fmt.Sprintf("Failed to read file: %v", err)
+			skipCount++
+		} else {
+			fileResult.Content = string(content)
+			fileResult.WasRead = true
+			readCount++
+		}
+
+		enhancedFiles = append(enhancedFiles, fileResult)
+	}
+
+	// Return enhanced result
+	result := map[string]interface{}{
+		"directory":     dir,
+		"files":         enhancedFiles,
+		"total_files":   len(filePaths),
+		"files_read":    readCount,
+		"files_skipped": skipCount,
+		"total_size":    totalSize,
+	}
+
+	return result, nil
 }
