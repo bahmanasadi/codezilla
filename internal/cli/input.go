@@ -556,11 +556,7 @@ func (s *SimpleInput) addToHistory(line string) {
 	s.history = append(s.history, line)
 	s.historyIndex = len(s.history)
 
-	// If we have a history file, periodically save history
-	// Only save every 10 commands to avoid excessive writes
-	if s.historyFile != "" && len(s.history)%10 == 0 {
-		go s.saveHistory() // Save asynchronously
-	}
+	go s.saveHistory() // Save asynchronously
 }
 
 // GetDefaultHistoryFilePath returns the default path for the command history file

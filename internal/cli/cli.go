@@ -23,19 +23,22 @@ import (
 
 // Config contains configuration for the CLI application
 type Config struct {
-	OllamaURL           string                   `json:"ollama_url"`
-	DefaultModel        string                   `json:"default_model"`
-	ModelProfiles       map[string]*ModelProfile `json:"model_profiles"` // Profiles for different models
-	SystemPrompt        string                   `json:"system_prompt"`
-	LogFile             string                   `json:"log_file"`
-	LogLevel            string                   `json:"log_level"`
-	LogSilent           bool                     `json:"log_silent"`
-	Temperature         float64                  `json:"temperature"`
-	MaxTokens           int                      `json:"max_tokens"`
-	ToolPermissions     map[string]string        `json:"tool_permissions"` // Maps tool name to permission level: "always_ask", "ask_once", "never_ask"
-	DangerousToolsWarn  bool                     `json:"dangerous_tools_warn"`
-	AlwaysAskPermission bool                     `json:"always_ask_permission"` // If true, always prompt for permission regardless of saved settings
-	DisableColors       bool                     `json:"disable_colors"`        // If true, disable ANSI color output
+	OllamaURL            string                   `json:"ollama_url"`
+	DefaultModel         string                   `json:"default_model"`
+	ModelProfiles        map[string]*ModelProfile `json:"model_profiles"` // Profiles for different models
+	SystemPrompt         string                   `json:"system_prompt"`
+	LogFile              string                   `json:"log_file"`
+	LogLevel             string                   `json:"log_level"`
+	LogSilent            bool                     `json:"log_silent"`
+	Temperature          float64                  `json:"temperature"`
+	MaxTokens            int                      `json:"max_tokens"`
+	ToolPermissions      map[string]string        `json:"tool_permissions"` // Maps tool name to permission level: "always_ask", "ask_once", "never_ask"
+	DangerousToolsWarn   bool                     `json:"dangerous_tools_warn"`
+	AlwaysAskPermission  bool                     `json:"always_ask_permission"`  // If true, always prompt for permission regardless of saved settings
+	DisableColors        bool                     `json:"disable_colors"`         // If true, disable ANSI color output
+	RetainContext        bool                     `json:"retain_context"`         // If true, retain conversation context between prompts
+	SmartContext         bool                     `json:"smart_context"`          // If true, use LLM to determine if context is needed
+	ContextAnalyzerModel string                   `json:"context_analyzer_model"` // Specific model to use for context analysis
 }
 
 // ModelProfile contains model-specific configuration
@@ -50,19 +53,22 @@ type ModelProfile struct {
 // DefaultConfig returns a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		OllamaURL:           "http://localhost:11434/api",
-		DefaultModel:        "qwen2.5-coder:3b",
-		ModelProfiles:       getDefaultModelProfiles(),
-		SystemPrompt:        defaultSystemPrompt,
-		LogFile:             "logs/codezilla.log",
-		LogLevel:            "info",
-		LogSilent:           false,
-		Temperature:         0.7,
-		MaxTokens:           4000,
-		ToolPermissions:     make(map[string]string),
-		DangerousToolsWarn:  true,
-		AlwaysAskPermission: false,
-		DisableColors:       false,
+		OllamaURL:            "http://localhost:11434/api",
+		DefaultModel:         "devstral:24b",
+		ModelProfiles:        getDefaultModelProfiles(),
+		SystemPrompt:         defaultSystemPrompt,
+		LogFile:              "logs/codezilla.log",
+		LogLevel:             "info",
+		LogSilent:            false,
+		Temperature:          0.7,
+		MaxTokens:            4000,
+		ToolPermissions:      make(map[string]string),
+		DangerousToolsWarn:   true,
+		AlwaysAskPermission:  false,
+		DisableColors:        false,
+		RetainContext:        true,
+		SmartContext:         true,
+		ContextAnalyzerModel: "phi4-mini-reasoning:3.8b", // Use a small model for context analysis
 	}
 }
 
@@ -146,13 +152,14 @@ func SaveConfig(config *Config, path string) error {
 
 // App represents the CLI application
 type App struct {
-	Agent        agent.Agent
-	ToolRegistry tools.ToolRegistry
-	LLMClient    ollama.Client
-	Logger       *logger.Logger
-	Config       *Config
-	Reader       InputReader // Using our InputReader interface for readline support
-	Writer       io.Writer
+	Agent           agent.Agent
+	ToolRegistry    tools.ToolRegistry
+	LLMClient       ollama.Client
+	Logger          *logger.Logger
+	Config          *Config
+	Reader          InputReader // Using our InputReader interface for readline support
+	Writer          io.Writer
+	ContextAnalyzer ContextAnalyzer // Analyzes if a prompt needs context
 }
 
 // NewApp creates a new CLI application with the given configuration
@@ -258,14 +265,23 @@ func NewApp(config *Config) (*App, error) {
 		return nil, fmt.Errorf("failed to create input reader: %w", err)
 	}
 
+	// Create context analyzer with a lightweight model
+	contextModel := config.ContextAnalyzerModel
+	if contextModel == "" {
+		// Fallback to a small default model if not specified
+		contextModel = "phi3:mini"
+	}
+	contextAnalyzer := NewLLMContextAnalyzer(ollamaClient, contextModel, log)
+
 	return &App{
-		Agent:        agent,
-		ToolRegistry: toolRegistry,
-		LLMClient:    ollamaClient,
-		Logger:       log,
-		Config:       config,
-		Reader:       reader,
-		Writer:       os.Stdout,
+		Agent:           agent,
+		ToolRegistry:    toolRegistry,
+		LLMClient:       ollamaClient,
+		Logger:          log,
+		Config:          config,
+		Reader:          reader,
+		Writer:          os.Stdout,
+		ContextAnalyzer: contextAnalyzer,
 	}, nil
 }
 
@@ -373,17 +389,51 @@ func (a *App) ProcessInput(ctx context.Context, input string) error {
 	// Process as a message to the agent
 	fmt.Fprint(a.Writer, style.ColorBold(style.ColorCodeGreen, "assistant> "))
 
+	// Determine if we should clear context based on retention setting and smart analysis
+	shouldClearContext := false
+
+	if !a.Config.RetainContext {
+		// If retention is off, always clear context
+		shouldClearContext = true
+	} else if a.Config.SmartContext && a.ContextAnalyzer != nil {
+		// If smart context is enabled, analyze the prompt
+		needsContext, err := a.ContextAnalyzer.NeedsContext(ctx, input)
+
+		if err != nil {
+			a.Logger.Warn("Failed to analyze context need, defaulting to retain context",
+				"error", err)
+		} else if !needsContext {
+			// If the analyzer determined the prompt doesn't need context, clear it
+			shouldClearContext = true
+		}
+	}
+
 	// Log query information
 	fmt.Fprintf(os.Stderr, "\n==== USER QUERY ====\n")
 	fmt.Fprintf(os.Stderr, "Query: %s\n", input)
 	fmt.Fprintf(os.Stderr, "Model: %s\n", a.Config.DefaultModel)
 	fmt.Fprintf(os.Stderr, "Ollama URL: %s\n", a.Config.OllamaURL)
+	fmt.Fprintf(os.Stderr, "Retain Context: %t\n", a.Config.RetainContext)
+	fmt.Fprintf(os.Stderr, "Smart Context: %t\n", a.Config.SmartContext)
+	fmt.Fprintf(os.Stderr, "Using Context: %t\n", !shouldClearContext)
 	fmt.Fprintf(os.Stderr, "Start time: %s\n", time.Now().Format(time.RFC3339))
 	fmt.Fprintf(os.Stderr, "====================\n\n")
 
 	a.Logger.Info("Received user query",
 		"query", input,
-		"model", a.Config.DefaultModel)
+		"model", a.Config.DefaultModel,
+		"retainContext", a.Config.RetainContext,
+		"smartContext", a.Config.SmartContext,
+		"usingContext", !shouldClearContext)
+
+	// Clear context if determined necessary
+	if shouldClearContext {
+		a.Logger.Info("Clearing context before processing",
+			"reason", getContextClearReason(a.Config.RetainContext, a.Config.SmartContext))
+		a.Agent.ClearContext()
+		// Re-add system prompt
+		a.Agent.AddSystemMessage(a.Config.SystemPrompt)
+	}
 
 	startTime := time.Now()
 	response, err := a.Agent.ProcessMessage(ctx, input)
@@ -416,6 +466,17 @@ func (a *App) ProcessInput(ctx context.Context, input string) error {
 		"responseLength", len(response))
 
 	return nil
+}
+
+// getContextClearReason returns a human-readable reason for clearing context
+func getContextClearReason(retainContext, smartContext bool) string {
+	if !retainContext {
+		return "context retention disabled"
+	}
+	if smartContext {
+		return "smart analysis determined prompt doesn't need context"
+	}
+	return "unknown reason"
 }
 
 // HandleCommand handles special commands
@@ -481,6 +542,49 @@ func (a *App) HandleCommand(ctx context.Context, cmd string) error {
 			fmt.Fprintln(a.Writer, "Color output has been disabled")
 		default:
 			return fmt.Errorf("invalid argument: %s. Use 'on' or 'off'", args)
+		}
+
+		// Save configuration
+		if err := SaveConfig(a.Config, "config.json"); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+
+		return nil
+	case "/context":
+		args = strings.TrimSpace(args)
+		if args == "" {
+			// Show current status
+			contextStatus := "retained between prompts"
+			if !a.Config.RetainContext {
+				contextStatus = "reset for each prompt"
+			}
+			fmt.Fprintf(a.Writer, "Conversation context is currently: %s\n", contextStatus)
+
+			smartStatus := "enabled"
+			if !a.Config.SmartContext {
+				smartStatus = "disabled"
+			}
+			fmt.Fprintf(a.Writer, "Smart context analysis is currently: %s\n", smartStatus)
+
+			fmt.Fprintln(a.Writer, "Usage: /context [retain|reset|smart|manual]")
+			return nil
+		}
+
+		switch strings.ToLower(args) {
+		case "retain", "keep", "on", "true", "yes", "1":
+			a.Config.RetainContext = true
+			fmt.Fprintln(a.Writer, "Context will now be retained between prompts")
+		case "reset", "clear", "off", "false", "no", "0":
+			a.Config.RetainContext = false
+			fmt.Fprintln(a.Writer, "Context will now be reset for each prompt")
+		case "smart", "auto", "analyze", "intelligent":
+			a.Config.SmartContext = true
+			fmt.Fprintln(a.Writer, "Smart context analysis enabled - context retention will be determined based on prompt analysis")
+		case "manual", "fixed", "static", "nosmart", "noauto":
+			a.Config.SmartContext = false
+			fmt.Fprintln(a.Writer, "Smart context analysis disabled - context will follow the retain/reset setting")
+		default:
+			return fmt.Errorf("invalid argument: %s. Use 'retain', 'reset', 'smart', or 'manual'", args)
 		}
 
 		// Save configuration
@@ -627,6 +731,24 @@ func (a *App) printConfig() {
 	}
 	fmt.Fprintf(a.Writer, "Color output: %s\n", colorStatus)
 
+	contextStatus := "retained between prompts"
+	if !a.Config.RetainContext {
+		contextStatus = "reset for each prompt"
+	}
+	fmt.Fprintf(a.Writer, "Context: %s\n", contextStatus)
+
+	smartContextStatus := "enabled"
+	if !a.Config.SmartContext {
+		smartContextStatus = "disabled"
+	}
+	fmt.Fprintf(a.Writer, "Smart context analysis: %s\n", smartContextStatus)
+
+	analyzerModel := a.Config.ContextAnalyzerModel
+	if analyzerModel == "" {
+		analyzerModel = "phi3:mini (default)"
+	}
+	fmt.Fprintf(a.Writer, "Context analyzer model: %s\n", analyzerModel)
+
 	// Check if we're using a profile
 	if a.Config.ModelProfiles != nil {
 		for name, profile := range a.Config.ModelProfiles {
@@ -703,13 +825,49 @@ func (a *App) handleConfigCommand(args string) error {
 			fmt.Fprintf(a.Writer, "Color output disabled\n")
 		}
 
-		// Save configuration
-		if err := SaveConfig(a.Config, "config.json"); err != nil {
-			return fmt.Errorf("failed to save config: %w", err)
+	case "context", "retain_context":
+		retain, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("invalid context value: %w", err)
+		}
+
+		a.Config.RetainContext = retain
+		if retain {
+			fmt.Fprintf(a.Writer, "Context will now be retained between prompts\n")
+		} else {
+			fmt.Fprintf(a.Writer, "Context will now be reset for each prompt\n")
+		}
+
+	case "smart_context":
+		smart, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("invalid smart_context value: %w", err)
+		}
+
+		a.Config.SmartContext = smart
+		if smart {
+			fmt.Fprintf(a.Writer, "Smart context analysis enabled\n")
+		} else {
+			fmt.Fprintf(a.Writer, "Smart context analysis disabled\n")
+		}
+
+	case "context_analyzer_model":
+		a.Config.ContextAnalyzerModel = value
+		fmt.Fprintf(a.Writer, "Context analyzer model set to: %s\n", value)
+
+		// Update the analyzer with the new model
+		if a.ContextAnalyzer != nil {
+			contextAnalyzer := NewLLMContextAnalyzer(a.LLMClient, value, a.Logger)
+			a.ContextAnalyzer = contextAnalyzer
 		}
 
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
+	}
+
+	// Save configuration
+	if err := SaveConfig(a.Config, "config.json"); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
 	}
 
 	return nil
@@ -874,6 +1032,7 @@ func (a *App) printHelp() {
 	fmt.Fprintln(a.Writer, "  /tools       - List available tools")
 	fmt.Fprintln(a.Writer, "  /permissions - Manage tool permission settings")
 	fmt.Fprintln(a.Writer, "  /color       - Toggle color output (on/off)")
+	fmt.Fprintln(a.Writer, "  /context     - Toggle conversation context retention (retain/reset)")
 	fmt.Fprintln(a.Writer, "  /clear       - Clear the screen")
 	fmt.Fprintln(a.Writer, "  /reset       - Reset conversation context (preserves system messages)")
 	fmt.Fprintln(a.Writer, "  /version     - Show version information")
