@@ -83,7 +83,12 @@ func (fi *FixedInput) ReadLine() (string, error) {
 		// Fall back to simple reading if raw mode fails
 		return fi.readSimple()
 	}
-	defer term.Restore(fi.fd, oldState)
+	defer func() {
+		if err := term.Restore(fi.fd, oldState); err != nil {
+			// Log error but don't return it as we're in a deferred function
+			fmt.Fprintf(os.Stderr, "Failed to restore terminal: %v\n", err)
+		}
+	}()
 
 	// Print prompt
 	fmt.Print(fi.prompt)
@@ -243,7 +248,10 @@ func (fi *FixedInput) ReadLine() (string, error) {
 
 				case '3': // Delete key (sequence is ESC[3~)
 					extra := make([]byte, 1)
-					fi.reader.Read(extra)
+					if _, err := fi.reader.Read(extra); err != nil {
+						// Continue on error
+						continue
+					}
 					if extra[0] == '~' && pos < len(line) {
 						line = append(line[:pos], line[pos+1:]...)
 						fi.redrawLine(line, pos)
@@ -356,7 +364,9 @@ func (fi *FixedInput) readSimple() (string, error) {
 // Close cleans up resources
 func (fi *FixedInput) Close() error {
 	if fi.historyFile != "" {
-		fi.saveHistory()
+		if err := fi.saveHistory(); err != nil {
+			return fmt.Errorf("failed to save history: %w", err)
+		}
 	}
 	return nil
 }
@@ -424,5 +434,10 @@ func (fi *FixedInput) addHistory(line string) {
 	fi.historyIndex = len(fi.history)
 
 	// Save asynchronously
-	go fi.saveHistory()
+	go func() {
+		if err := fi.saveHistory(); err != nil {
+			// Log error but don't block
+			fmt.Fprintf(os.Stderr, "Failed to save history: %v\n", err)
+		}
+	}()
 }

@@ -194,11 +194,7 @@ func looksLikeShellCommand(line string) bool {
 
 	// Check for environment variable assignments
 	envVarPattern := regexp.MustCompile(`^[A-Z_][A-Z0-9_]*=`)
-	if envVarPattern.MatchString(line) {
-		return true
-	}
-
-	return false
+	return envVarPattern.MatchString(line)
 }
 
 // extractShellCommands extracts individual shell commands from a code block

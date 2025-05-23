@@ -107,7 +107,6 @@ func (s *SimpleInput) watchTerminalSize() {
 // State for tracking previous display
 var (
 	lastLineCount int = 0
-	lastPromptLen int = 0
 )
 
 // refresh redraws the current line
@@ -181,7 +180,6 @@ func (s *SimpleInput) refresh(buffer []rune, pos int) {
 
 	// Remember state for next refresh
 	lastLineCount = newLineCount
-	lastPromptLen = promptLen
 }
 
 // ReadLine reads a line of input from the terminal with bash-like behavior
@@ -196,11 +194,15 @@ func (s *SimpleInput) ReadLine() (string, error) {
 		return s.readLineSimple()
 	}
 	s.oldState = oldState
-	defer term.Restore(s.fd, oldState)
+	defer func() {
+		if err := term.Restore(s.fd, oldState); err != nil {
+			// Log error but don't return it as we're in a deferred function
+			fmt.Fprintf(os.Stderr, "Failed to restore terminal: %v\n", err)
+		}
+	}()
 
 	// Reset display state
 	lastLineCount = 0
-	lastPromptLen = 0
 
 	// Initialize
 	var buffer []rune
@@ -482,10 +484,14 @@ func (s *SimpleInput) readLineSimple() (string, error) {
 // Close cleans up resources
 func (s *SimpleInput) Close() error {
 	if s.rawMode && s.oldState != nil {
-		term.Restore(s.fd, s.oldState)
+		if err := term.Restore(s.fd, s.oldState); err != nil {
+			return fmt.Errorf("failed to restore terminal: %w", err)
+		}
 	}
 	if s.historyFile != "" {
-		s.saveHistory()
+		if err := s.saveHistory(); err != nil {
+			return fmt.Errorf("failed to save history: %w", err)
+		}
 	}
 	return nil
 }
@@ -551,7 +557,12 @@ func (s *SimpleInput) addToHistory(line string) {
 	s.history = append(s.history, line)
 	s.historyIndex = len(s.history)
 
-	go s.saveHistory()
+	go func() {
+		if err := s.saveHistory(); err != nil {
+			// Log error but don't block
+			fmt.Fprintf(os.Stderr, "Failed to save history: %v\n", err)
+		}
+	}()
 }
 
 // GetDefaultHistoryFilePath returns the default path for the command history file

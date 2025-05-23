@@ -1,7 +1,5 @@
 package ui
 
-import ()
-
 // Theme defines the colors and styles for the UI
 type Theme struct {
 	// Colors

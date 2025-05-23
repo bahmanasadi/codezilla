@@ -375,7 +375,7 @@ func (a *agent) generateResponse(ctx context.Context) (string, error) {
 
 // XMLToolCall represents the XML structure for tool calls
 type XMLToolCall struct {
-	Name   string    `xml:"name,n"` // Accept both <n> and <n> tags
+	Name   string    `xml:"name"` // Accept standard name tag
 	Params XMLParams `xml:"params"`
 }
 
