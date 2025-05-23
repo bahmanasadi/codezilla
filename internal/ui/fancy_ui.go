@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -116,6 +117,12 @@ func (ui *FancyUI) ShowWelcome(model, ollamaURL string, contextEnabled bool) {
 		ui.Print("💾 Context: %sDisabled%s\n",
 			ui.theme.ColorDim, ui.theme.ColorReset)
 	}
+
+	// Working directory info
+	cwd, _ := os.Getwd()
+	ui.Print("📁 Working Directory: %s%s%s\n",
+		ui.theme.ColorCyan, cwd, ui.theme.ColorReset)
+
 	ui.Println("")
 }
 

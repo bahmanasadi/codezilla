@@ -34,16 +34,31 @@ type Config struct {
 	// UI settings
 	ForceColor bool `json:"force_color"`
 	NoColor    bool `json:"no_color"`
+
+	// Working directory
+	WorkingDirectory string `json:"working_directory"`
 }
 
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+
+	systemPrompt := fmt.Sprintf(`You are Codezilla, a helpful AI assistant powered by Ollama. You have access to various tools that allow you to interact with the local system, read and write files, execute commands, and more.
+
+Current working directory: %s
+
+When the user refers to "the project", "this project", "search", or uses relative paths, assume they mean the current working directory and its contents. Always strive to be helpful, accurate, and safe in your responses.`, cwd)
+
 	return &Config{
 		DefaultModel:        "qwen3:14b",
 		OllamaURL:           "http://localhost:11434/api",
 		Temperature:         0.7,
 		MaxTokens:           4096,
-		SystemPrompt:        "You are Codezilla, a helpful AI assistant powered by Ollama. You have access to various tools that allow you to interact with the local system, read and write files, execute commands, and more. Always strive to be helpful, accurate, and safe in your responses.",
+		SystemPrompt:        systemPrompt,
 		LogFile:             filepath.Join("logs", "codezilla.log"),
 		LogLevel:            "info",
 		LogSilent:           false,
@@ -60,8 +75,9 @@ func DefaultConfig() *Config {
 			"fileWrite":     "always_ask",
 			"execute":       "always_ask",
 		},
-		ForceColor: false,
-		NoColor:    false,
+		ForceColor:       false,
+		NoColor:          false,
+		WorkingDirectory: cwd,
 	}
 }
 
@@ -89,6 +105,20 @@ func LoadConfig(path string) (*Config, error) {
 	if config.ToolPermissions == nil {
 		config.ToolPermissions = make(map[string]string)
 	}
+
+	// Always use current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	config.WorkingDirectory = cwd
+
+	// Update system prompt with current working directory
+	config.SystemPrompt = fmt.Sprintf(`You are Codezilla, a helpful AI assistant powered by Ollama. You have access to various tools that allow you to interact with the local system, read and write files, execute commands, and more.
+
+Current working directory: %s
+
+When the user refers to "the project", "this project", "search", or uses relative paths, assume they mean the current working directory and its contents. Always strive to be helpful, accurate, and safe in your responses.`, cwd)
 
 	return config, nil
 }
