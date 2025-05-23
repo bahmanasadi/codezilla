@@ -5,105 +5,145 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"codezilla/internal/cli"
+	"codezilla/internal/core"
+	"codezilla/internal/ui"
 )
-
-var (
-	// Command line flags
-	configFile string
-	logFile    string
-	logLevel   string
-	logSilent  bool
-	modelName  string
-	ollamaURL  string
-	noColor    bool
-	forceColor bool
-)
-
-func init() {
-	// Define command line flags
-	flag.StringVar(&configFile, "config", filepath.Join(getConfigDir(), "config.json"), "Path to config file")
-	flag.StringVar(&logFile, "log", "", "Path to log file (overrides config)")
-	flag.StringVar(&logLevel, "log-level", "", "Log level: debug, info, warn, error (overrides config)")
-	flag.BoolVar(&logSilent, "log-silent", false, "Disable console logging (overrides config)")
-	flag.StringVar(&modelName, "model", "", "Model name to use (overrides config)")
-	flag.StringVar(&ollamaURL, "ollama-url", "", "Ollama API URL (overrides config)")
-	flag.BoolVar(&noColor, "no-color", false, "Disable colorized output (useful for GoLand's emulated terminal)")
-	flag.BoolVar(&forceColor, "force-color", false, "Force colorized output even in non-terminal environments")
-}
 
 func main() {
 	// Parse command line flags
+	var (
+		configPath = flag.String("config", "", "Path to config file")
+		uiType     = flag.String("ui", "terminal", "UI type: terminal, minimal, or fancy")
+		noColors   = flag.Bool("no-colors", false, "Disable colored output")
+		version    = flag.Bool("version", false, "Show version")
+		help       = flag.Bool("help", false, "Show help")
+	)
 	flag.Parse()
 
+	// Handle version
+	if *version {
+		fmt.Println("Codezilla v2.0.0 - Modular Architecture")
+		os.Exit(0)
+	}
+
+	// Handle help
+	if *help {
+		printHelp()
+		os.Exit(0)
+	}
+
+	// Get config path
+	if *configPath == "" {
+		*configPath = getDefaultConfigPath()
+	}
+
 	// Load configuration
-	config, err := cli.LoadConfig(configFile)
+	config, err := cli.LoadConfig(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		config = cli.DefaultConfig()
+		fmt.Printf("Note: Using default configuration\n")
+	}
+
+	// Apply color settings
+	if *noColors {
+		config.NoColor = true
+	}
+
+	// Get history file path
+	historyPath, _ := cli.GetDefaultHistoryFilePath()
+
+	// Create UI based on selection
+	var appUI ui.UI
+	switch *uiType {
+	case "minimal":
+		appUI, err = ui.NewMinimalUI(historyPath)
+	case "fancy":
+		// You could add a fancy UI with more features
+		appUI, err = ui.NewFancyUI(historyPath)
+	default:
+		appUI, err = ui.NewTerminalUI(historyPath)
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize UI: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Override config with command line flags if provided
-	if logFile != "" {
-		config.LogFile = logFile
-	}
-	if logLevel != "" {
-		config.LogLevel = logLevel
-	}
-	// If log file is provided, we want to set silent mode by default
-	// to ensure logs go only to the file
-	if logFile != "" {
-		config.LogSilent = true
+	// Disable colors if requested
+	if *noColors {
+		appUI.DisableColors()
 	}
 
-	// But if logSilent flag was explicitly set, honor that value
-	if logSilent {
-		config.LogSilent = true
-	}
-	if modelName != "" {
-		config.DefaultModel = modelName
-	}
-	if ollamaURL != "" {
-		config.OllamaURL = ollamaURL
-	}
-
-	// Handle color-related flags
-	if noColor {
-		// Set environment variable for the style package
-		os.Setenv("CODEZILLA_NO_COLOR", "true")
-	}
-	if forceColor {
-		os.Setenv("FORCE_COLOR", "true")
-	}
-
-	// Create and run the application
-	app, err := cli.NewApp(config)
+	// Create the core application
+	app, err := core.NewApp(config, appUI)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating application: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to initialize application: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Create a context that will be canceled on interrupt
-	ctx := context.Background()
+	// Setup signal handling
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		appUI.Info("\nShutting down...")
+		cancel()
+	}()
 
 	// Run the application
 	if err := app.Run(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Application error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// getConfigDir returns the directory for configuration files
-func getConfigDir() string {
-	// Get user config directory
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		// Fall back to current directory
-		return "./config"
+func getDefaultConfigPath() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".config", "codezilla", "config.json")
 	}
+	return "config.json"
+}
 
-	// Use application-specific subdirectory
-	return filepath.Join(configDir, "codezilla")
+func printHelp() {
+	fmt.Print(`Codezilla - Modular AI-powered coding assistant
+
+Usage:
+  codezilla [options]
+
+Options:
+  -config string   Path to configuration file
+  -ui string      UI type: terminal (default), minimal, or fancy
+  -no-colors      Disable colored output
+  -version        Show version information
+  -help           Show this help message
+
+UI Types:
+  terminal  - Full terminal UI with colors and formatting (default)
+  minimal   - Minimal UI with no colors or special formatting
+  fancy     - Fancy UI with extra features (if implemented)
+
+Examples:
+  # Run with default terminal UI
+  codezilla
+
+  # Run with minimal UI
+  codezilla -ui minimal
+
+  # Run without colors
+  codezilla -no-colors
+
+  # Use custom config
+  codezilla -config /path/to/config.json
+
+The modular architecture allows easy switching between different UI implementations
+while keeping the core functionality unchanged.
+`)
 }

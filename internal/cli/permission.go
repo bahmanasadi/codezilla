@@ -89,6 +89,8 @@ func cliPermissionCallback(in io.Reader, out io.Writer, request tools.Permission
 }
 
 // handlePermissionsCommand handles the /permissions command
+// TODO: Move this to core package
+/*
 func (a *App) handlePermissionsCommand(args string) error {
 	if args == "" {
 		// Display current permission settings
@@ -219,6 +221,7 @@ func (a *App) listPermissions() error {
 
 	return nil
 }
+*/
 
 // validatePermissionLevel validates and normalizes a permission level string
 func validatePermissionLevel(level string) (string, error) {

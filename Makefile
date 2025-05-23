@@ -25,6 +25,11 @@ help:
 	@echo "  make check      - Run fmt, vet and lint"
 	@echo "  make all        - Run check and build"
 	@echo "  make tidy       - Tidy and verify dependencies"
+	@echo ""
+	@echo "UI commands:"
+	@echo "  make run         - Run with default terminal UI"
+	@echo "  make run-minimal - Run with minimal UI"
+	@echo "  make run-fancy   - Run with fancy UI"
 
 build:
 	@echo "Building $(BINARY_NAME) $(VERSION)..."
@@ -76,3 +81,14 @@ idy:
 	$(GO) mod verify
 
 check: tidy fmt vet lint
+
+# UI-specific run targets
+.PHONY: run-minimal
+run-minimal: build
+	@echo "Running with minimal UI..."
+	@./$(BUILD_DIR)/$(BINARY_NAME) -ui minimal
+
+.PHONY: run-fancy
+run-fancy: build
+	@echo "Running with fancy UI..."
+	@./$(BUILD_DIR)/$(BINARY_NAME) -ui fancy
