@@ -17,7 +17,6 @@ help:
 	@echo "  make install    - Install the application to GOPATH/bin"
 	@echo "  make clean      - Remove build artifacts"
 	@echo "  make run        - Run the application"
-	@echo "  make run-debug  - Run with debug logging"
 	@echo "  make test       - Run tests"
 	@echo "  make lint       - Run linter"
 	@echo "  make fmt        - Format code"
@@ -27,9 +26,8 @@ help:
 	@echo "  make tidy       - Tidy and verify dependencies"
 	@echo ""
 	@echo "UI commands:"
-	@echo "  make run         - Run with default terminal UI"
+	@echo "  make run         - Run with default fancy UI"
 	@echo "  make run-minimal - Run with minimal UI"
-	@echo "  make run-fancy   - Run with fancy UI"
 
 build:
 	@echo "Building $(BINARY_NAME) $(VERSION)..."
@@ -45,13 +43,9 @@ clean:
 	@rm -f $(BINARY_NAME)
 
 run: build
-	@echo "Running $(BINARY_NAME)..."
+	@echo "Running with default fancy UI..."
 	@./$(BUILD_DIR)/$(BINARY_NAME)
 
-run-debug: build
-	@echo "Running $(BINARY_NAME) in debug mode..."
-	@mkdir -p $(LOG_DIR)
-	@./$(BUILD_DIR)/$(BINARY_NAME) -log $(LOG_DIR)/$(BINARY_NAME).log -log-level debug -log-silent
 
 test:
 	$(GO) test -v ./...
@@ -87,8 +81,3 @@ check: tidy fmt vet lint
 run-minimal: build
 	@echo "Running with minimal UI..."
 	@./$(BUILD_DIR)/$(BINARY_NAME) -ui minimal
-
-.PHONY: run-fancy
-run-fancy: build
-	@echo "Running with fancy UI..."
-	@./$(BUILD_DIR)/$(BINARY_NAME) -ui fancy

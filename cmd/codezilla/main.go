@@ -18,7 +18,7 @@ func main() {
 	// Parse command line flags
 	var (
 		configPath = flag.String("config", "", "Path to config file")
-		uiType     = flag.String("ui", "terminal", "UI type: terminal, minimal, or fancy")
+		uiType     = flag.String("ui", "fancy", "UI type: minimal or fancy")
 		noColors   = flag.Bool("no-colors", false, "Disable colored output")
 		version    = flag.Bool("version", false, "Show version")
 		help       = flag.Bool("help", false, "Show help")
@@ -62,11 +62,9 @@ func main() {
 	switch *uiType {
 	case "minimal":
 		appUI, err = ui.NewMinimalUI(historyPath)
-	case "fancy":
-		// You could add a fancy UI with more features
-		appUI, err = ui.NewFancyUI(historyPath)
 	default:
-		appUI, err = ui.NewTerminalUI(historyPath)
+		// Default to fancy UI
+		appUI, err = ui.NewFancyUI(historyPath)
 	}
 
 	if err != nil {
@@ -120,18 +118,17 @@ Usage:
 
 Options:
   -config string   Path to configuration file
-  -ui string      UI type: terminal (default), minimal, or fancy
+  -ui string      UI type: fancy (default) or minimal
   -no-colors      Disable colored output
   -version        Show version information
   -help           Show this help message
 
 UI Types:
-  terminal  - Full terminal UI with colors and formatting (default)
+  fancy     - Enhanced UI with animations and emoji (default)
   minimal   - Minimal UI with no colors or special formatting
-  fancy     - Fancy UI with extra features (if implemented)
 
 Examples:
-  # Run with default terminal UI
+  # Run with default fancy UI
   codezilla
 
   # Run with minimal UI

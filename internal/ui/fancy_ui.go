@@ -9,19 +9,19 @@ import (
 
 // FancyUI implements a fancy UI with animations and extra visual elements
 type FancyUI struct {
-	*TerminalUI // Embed TerminalUI and override specific methods
-	spinnerWg   sync.WaitGroup
+	*BaseUI   // Embed BaseUI and override specific methods
+	spinnerWg sync.WaitGroup
 }
 
 // NewFancyUI creates a fancy UI implementation
 func NewFancyUI(historyFile string) (UI, error) {
-	termUI, err := NewTerminalUI(historyFile)
+	baseUI, err := NewBaseUI(historyFile)
 	if err != nil {
 		return nil, err
 	}
 
 	// Cast to get access to the concrete type
-	tui := termUI.(*TerminalUI)
+	tui := baseUI.(*BaseUI)
 
 	// Customize the theme with more fancy elements
 	theme := tui.GetTheme()
@@ -32,7 +32,7 @@ func NewFancyUI(historyFile string) (UI, error) {
 	theme.IconPrompt = "🤖"
 	tui.SetTheme(theme)
 
-	return &FancyUI{TerminalUI: tui}, nil
+	return &FancyUI{BaseUI: tui}, nil
 }
 
 // ShowBanner displays an animated banner

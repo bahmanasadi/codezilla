@@ -12,8 +12,8 @@ import (
 	"golang.org/x/term"
 )
 
-// TerminalUI implements the UI interface with a terminal-based interface
-type TerminalUI struct {
+// BaseUI implements the UI interface with a base interface
+type BaseUI struct {
 	theme        Theme
 	reader       cli.InputReader
 	writer       *bufio.Writer
@@ -22,8 +22,8 @@ type TerminalUI struct {
 	width        int
 }
 
-// NewTerminalUI creates a new terminal-based UI
-func NewTerminalUI(historyFile string) (UI, error) {
+// NewBaseUI creates a new base UI
+func NewBaseUI(historyFile string) (UI, error) {
 	// Get terminal width
 	width, _, _ := term.GetSize(int(os.Stdout.Fd()))
 	if width == 0 {
@@ -39,7 +39,7 @@ func NewTerminalUI(historyFile string) (UI, error) {
 		return nil, err
 	}
 
-	ui := &TerminalUI{
+	ui := &BaseUI{
 		theme:  DefaultTheme(),
 		reader: reader,
 		writer: bufio.NewWriter(os.Stdout),
@@ -71,13 +71,13 @@ func DefaultTheme() Theme {
 }
 
 // Clear clears the terminal screen
-func (ui *TerminalUI) Clear() {
+func (ui *BaseUI) Clear() {
 	fmt.Fprint(ui.writer, "\033[2J\033[H")
 	ui.writer.Flush()
 }
 
 // ShowBanner displays the application banner
-func (ui *TerminalUI) ShowBanner() {
+func (ui *BaseUI) ShowBanner() {
 	banner := `
    ____          _           _ _ _       
   / ___|___   __| | ___ ____(_) | | __ _ 
@@ -93,7 +93,7 @@ func (ui *TerminalUI) ShowBanner() {
 }
 
 // ShowWelcome displays the welcome message
-func (ui *TerminalUI) ShowWelcome(model, ollamaURL string, contextEnabled bool) {
+func (ui *BaseUI) ShowWelcome(model, ollamaURL string, contextEnabled bool) {
 	ui.Print("%sWelcome!%s Type %s/help%s for commands or start chatting.\n",
 		ui.theme.ColorBold, ui.theme.ColorReset,
 		ui.theme.ColorYellow, ui.theme.ColorReset)
@@ -115,49 +115,49 @@ func (ui *TerminalUI) ShowWelcome(model, ollamaURL string, contextEnabled bool) 
 }
 
 // ShowPrompt returns the prompt string
-func (ui *TerminalUI) ShowPrompt() string {
+func (ui *BaseUI) ShowPrompt() string {
 	return fmt.Sprintf("%scodezilla%s 🤖 ",
 		ui.theme.ColorBlue, ui.theme.ColorReset)
 }
 
 // Print outputs formatted text
-func (ui *TerminalUI) Print(format string, args ...interface{}) {
+func (ui *BaseUI) Print(format string, args ...interface{}) {
 	fmt.Fprintf(ui.writer, format, args...)
 	ui.writer.Flush()
 }
 
 // Println outputs formatted text with newline
-func (ui *TerminalUI) Println(format string, args ...interface{}) {
+func (ui *BaseUI) Println(format string, args ...interface{}) {
 	fmt.Fprintf(ui.writer, format+"\n", args...)
 	ui.writer.Flush()
 }
 
 // Success shows a success message
-func (ui *TerminalUI) Success(format string, args ...interface{}) {
+func (ui *BaseUI) Success(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	ui.Println("%s%s%s %s", ui.theme.ColorGreen, ui.theme.IconSuccess, ui.theme.ColorReset, msg)
 }
 
 // Error shows an error message
-func (ui *TerminalUI) Error(format string, args ...interface{}) {
+func (ui *BaseUI) Error(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	ui.Println("%s%s%s %s", ui.theme.ColorRed, ui.theme.IconError, ui.theme.ColorReset, msg)
 }
 
 // Warning shows a warning message
-func (ui *TerminalUI) Warning(format string, args ...interface{}) {
+func (ui *BaseUI) Warning(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	ui.Println("%s%s%s %s", ui.theme.ColorYellow, ui.theme.IconWarning, ui.theme.ColorReset, msg)
 }
 
 // Info shows an info message
-func (ui *TerminalUI) Info(format string, args ...interface{}) {
+func (ui *BaseUI) Info(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	ui.Println("%s%s%s %s", ui.theme.ColorBlue, ui.theme.IconInfo, ui.theme.ColorReset, msg)
 }
 
 // ShowThinking shows a thinking/loading indicator
-func (ui *TerminalUI) ShowThinking() {
+func (ui *BaseUI) ShowThinking() {
 	ui.spinnerMutex.Lock()
 	if ui.spinnerStop != nil {
 		ui.spinnerMutex.Unlock()
@@ -187,7 +187,7 @@ func (ui *TerminalUI) ShowThinking() {
 }
 
 // HideThinking hides the thinking indicator
-func (ui *TerminalUI) HideThinking() {
+func (ui *BaseUI) HideThinking() {
 	ui.spinnerMutex.Lock()
 	defer ui.spinnerMutex.Unlock()
 
@@ -198,7 +198,7 @@ func (ui *TerminalUI) HideThinking() {
 }
 
 // ShowResponse displays an AI response
-func (ui *TerminalUI) ShowResponse(response string) {
+func (ui *BaseUI) ShowResponse(response string) {
 	ui.Println("\n%sAssistant:%s", ui.theme.ColorGreen, ui.theme.ColorReset)
 
 	// Process response for code blocks
@@ -222,7 +222,7 @@ func (ui *TerminalUI) ShowResponse(response string) {
 }
 
 // ShowCode displays a code block
-func (ui *TerminalUI) ShowCode(language, code string) {
+func (ui *BaseUI) ShowCode(language, code string) {
 	ui.Println("%s```%s%s", ui.theme.ColorPurple, language, ui.theme.ColorReset)
 	ui.Print(code)
 	if !strings.HasSuffix(code, "\n") {
@@ -232,7 +232,7 @@ func (ui *TerminalUI) ShowCode(language, code string) {
 }
 
 // ShowHelp displays help information
-func (ui *TerminalUI) ShowHelp() {
+func (ui *BaseUI) ShowHelp() {
 	ui.Println("\n%sAvailable Commands:%s", ui.theme.ColorBold, ui.theme.ColorReset)
 
 	commands := []struct {
@@ -257,7 +257,7 @@ func (ui *TerminalUI) ShowHelp() {
 }
 
 // ShowModels displays available models
-func (ui *TerminalUI) ShowModels(models []string, current string) {
+func (ui *BaseUI) ShowModels(models []string, current string) {
 	ui.Println("\n%sAvailable Models:%s", ui.theme.ColorBold, ui.theme.ColorReset)
 
 	for _, model := range models {
@@ -272,7 +272,7 @@ func (ui *TerminalUI) ShowModels(models []string, current string) {
 }
 
 // ShowTools displays available tools
-func (ui *TerminalUI) ShowTools(tools []ToolInfo) {
+func (ui *BaseUI) ShowTools(tools []ToolInfo) {
 	ui.Println("\n%sAvailable Tools:%s", ui.theme.ColorBold, ui.theme.ColorReset)
 
 	for _, tool := range tools {
@@ -292,7 +292,7 @@ func (ui *TerminalUI) ShowTools(tools []ToolInfo) {
 }
 
 // ShowContext displays conversation context
-func (ui *TerminalUI) ShowContext(context string) {
+func (ui *BaseUI) ShowContext(context string) {
 	ui.Println("\n%sConversation Context:%s", ui.theme.ColorBold, ui.theme.ColorReset)
 	if context == "" {
 		ui.Println("No context stored")
@@ -303,7 +303,7 @@ func (ui *TerminalUI) ShowContext(context string) {
 }
 
 // ReadLine reads a line of input (single-line mode)
-func (ui *TerminalUI) ReadLine() (string, error) {
+func (ui *BaseUI) ReadLine() (string, error) {
 	// Update prompt in reader if it's our FixedInput
 	if fixedInput, ok := ui.reader.(*cli.FixedInput); ok {
 		fixedInput.SetPrompt(ui.ShowPrompt())
@@ -312,7 +312,7 @@ func (ui *TerminalUI) ReadLine() (string, error) {
 }
 
 // ReadPassword reads a password without echoing
-func (ui *TerminalUI) ReadPassword(prompt string) (string, error) {
+func (ui *BaseUI) ReadPassword(prompt string) (string, error) {
 	ui.Print(prompt)
 
 	fd := int(os.Stdin.Fd())
@@ -327,7 +327,7 @@ func (ui *TerminalUI) ReadPassword(prompt string) (string, error) {
 }
 
 // Confirm asks for yes/no confirmation
-func (ui *TerminalUI) Confirm(prompt string) (bool, error) {
+func (ui *BaseUI) Confirm(prompt string) (bool, error) {
 	for {
 		ui.Print("%s (y/n): ", prompt)
 		response, err := ui.ReadLine()
@@ -348,17 +348,17 @@ func (ui *TerminalUI) Confirm(prompt string) (bool, error) {
 }
 
 // GetTheme returns the current theme
-func (ui *TerminalUI) GetTheme() Theme {
+func (ui *BaseUI) GetTheme() Theme {
 	return ui.theme
 }
 
 // SetTheme sets a new theme
-func (ui *TerminalUI) SetTheme(theme Theme) {
+func (ui *BaseUI) SetTheme(theme Theme) {
 	ui.theme = theme
 }
 
 // DisableColors disables all colors in the theme
-func (ui *TerminalUI) DisableColors() {
+func (ui *BaseUI) DisableColors() {
 	ui.theme = Theme{
 		ColorReset:  "",
 		ColorRed:    "",
