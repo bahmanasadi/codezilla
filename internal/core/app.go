@@ -1,8 +1,10 @@
 package core
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"codezilla/internal/agent"
@@ -54,14 +56,67 @@ func NewApp(config *cli.Config, ui ui.UI) (*App, error) {
 	toolRegistry := tools.NewToolRegistry()
 	registerTools(toolRegistry)
 
+	// Create permission manager with interactive callback
+	permissionMgr := tools.NewPermissionManager(func(ctx context.Context, request tools.PermissionRequest) (tools.PermissionResponse, error) {
+		// Hide thinking indicator before showing permission request
+		ui.HideThinking()
+
+		// Show permission request to user
+		ui.Warning("\n🔧 Tool Permission Request:")
+		ui.Print("Tool: %s\n", request.ToolContext.ToolName)
+		ui.Print("Description: %s\n", request.Description)
+		ui.Print("\n")
+
+		// Ask for permission with a simple prompt
+		ui.Print("Allow this action? (y/n/always): ")
+
+		// Read response directly without the usual prompt
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			return tools.PermissionResponse{Granted: false}, fmt.Errorf("failed to read response")
+		}
+		response := scanner.Text()
+
+		response = strings.ToLower(strings.TrimSpace(response))
+
+		// Show thinking indicator again after permission
+		ui.ShowThinking()
+
+		switch response {
+		case "y", "yes":
+			return tools.PermissionResponse{Granted: true, RememberMe: false}, nil
+		case "always", "a":
+			return tools.PermissionResponse{Granted: true, RememberMe: true}, nil
+		default:
+			return tools.PermissionResponse{Granted: false, RememberMe: false}, nil
+		}
+	})
+
+	// Apply permission levels from config
+	for toolName, permString := range config.ToolPermissions {
+		var level tools.PermissionLevel
+		switch permString {
+		case "never_ask":
+			level = tools.NeverAsk
+		case "always_ask":
+			level = tools.AlwaysAsk
+		case "ask_once":
+			level = tools.AskOnce
+		default:
+			level = tools.AlwaysAsk
+		}
+		permissionMgr.SetDefaultPermissionLevel(toolName, level)
+	}
+
 	// Initialize agent
 	agentConfig := &agent.Config{
-		Model:        config.DefaultModel,
-		SystemPrompt: config.SystemPrompt,
-		Temperature:  float64(config.Temperature),
-		MaxTokens:    config.MaxTokens,
-		Logger:       log,
-		ToolRegistry: toolRegistry,
+		Model:         config.DefaultModel,
+		SystemPrompt:  config.SystemPrompt,
+		Temperature:   float64(config.Temperature),
+		MaxTokens:     config.MaxTokens,
+		Logger:        log,
+		ToolRegistry:  toolRegistry,
+		PermissionMgr: permissionMgr,
 	}
 	agentInstance := agent.NewAgent(agentConfig)
 
@@ -297,10 +352,17 @@ func (app *App) showTools() {
 
 // registerTools registers all available tools
 func registerTools(registry tools.ToolRegistry) {
+	// File operation tools
 	registry.RegisterTool(tools.NewFileReadTool())
 	registry.RegisterTool(tools.NewFileWriteTool())
 	registry.RegisterTool(tools.NewListFilesTool())
 	registry.RegisterTool(tools.NewFileReadBatchTool())
 	registry.RegisterTool(tools.NewProjectScanTool())
 	registry.RegisterTool(tools.NewExecuteTool(30))
+
+	// Todo management tools
+	for _, tool := range tools.GetTodoTools() {
+		registry.RegisterTool(tool)
+	}
+	registry.RegisterTool(tools.GetTodoClearTool())
 }

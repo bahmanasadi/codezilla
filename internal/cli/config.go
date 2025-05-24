@@ -57,7 +57,7 @@ When the user refers to "the project", "this project", "search", or uses relativ
 		DefaultModel:        "qwen3:14b",
 		OllamaURL:           "http://localhost:11434/api",
 		Temperature:         0.7,
-		MaxTokens:           4096,
+		MaxTokens:           1024 * 32,
 		SystemPrompt:        systemPrompt,
 		LogFile:             filepath.Join("logs", "codezilla.log"),
 		LogLevel:            "info",

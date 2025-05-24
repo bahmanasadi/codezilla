@@ -17,11 +17,15 @@ import (
 func main() {
 	// Parse command line flags
 	var (
-		configPath = flag.String("config", "", "Path to config file")
-		uiType     = flag.String("ui", "fancy", "UI type: minimal or fancy")
-		noColors   = flag.Bool("no-colors", false, "Disable colored output")
-		version    = flag.Bool("version", false, "Show version")
-		help       = flag.Bool("help", false, "Show help")
+		configPath  = flag.String("config", "", "Path to config file")
+		uiType      = flag.String("ui", "fancy", "UI type: minimal or fancy")
+		noColors    = flag.Bool("no-colors", false, "Disable colored output")
+		model       = flag.String("model", "", "Override default model")
+		ollamaURL   = flag.String("ollama-url", "", "Override Ollama API URL")
+		temperature = flag.Float64("temperature", -1, "Override temperature (0.0-1.0)")
+		maxTokens   = flag.Int("max-tokens", 0, "Override max tokens")
+		version     = flag.Bool("version", false, "Show version")
+		help        = flag.Bool("help", false, "Show help")
 	)
 	flag.Parse()
 
@@ -47,6 +51,20 @@ func main() {
 	if err != nil {
 		config = cli.DefaultConfig()
 		fmt.Printf("Note: Using default configuration\n")
+	}
+
+	// Apply CLI overrides
+	if *model != "" {
+		config.DefaultModel = *model
+	}
+	if *ollamaURL != "" {
+		config.OllamaURL = *ollamaURL
+	}
+	if *temperature >= 0 && *temperature <= 1 {
+		config.Temperature = float32(*temperature)
+	}
+	if *maxTokens > 0 {
+		config.MaxTokens = *maxTokens
 	}
 
 	// Apply color settings
@@ -117,11 +135,15 @@ Usage:
   codezilla [options]
 
 Options:
-  -config string   Path to configuration file
-  -ui string      UI type: fancy (default) or minimal
-  -no-colors      Disable colored output
-  -version        Show version information
-  -help           Show this help message
+  -config string       Path to configuration file
+  -model string        Override default model (e.g., "qwen3:14b")
+  -ollama-url string   Override Ollama API URL (e.g., "http://localhost:11434/api")
+  -temperature float   Override temperature (0.0-1.0)
+  -max-tokens int      Override max tokens
+  -ui string           UI type: fancy (default) or minimal
+  -no-colors           Disable colored output
+  -version             Show version information
+  -help                Show this help message
 
 UI Types:
   fancy     - Enhanced UI with animations and emoji (default)
@@ -139,6 +161,15 @@ Examples:
 
   # Use custom config
   codezilla -config /path/to/config.json
+
+  # Override model
+  codezilla -model "llama3:latest"
+
+  # Override Ollama URL
+  codezilla -ollama-url "http://192.168.1.100:11434/api"
+
+  # Override temperature
+  codezilla -temperature 0.8
 
 The modular architecture allows easy switching between different UI implementations
 while keeping the core functionality unchanged.

@@ -6,7 +6,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -147,6 +146,19 @@ func (a *agent) ProcessMessage(ctx context.Context, message string) (string, err
 	// Add user message to context
 	a.AddUserMessage(message)
 
+	// Check if we should create a todo plan for this message
+	if a.shouldCreateTodoPlan(message) {
+		a.logger.Debug("Creating automatic todo plan for complex task")
+		planResponse, err := a.createAutomaticTodoPlan(ctx, message)
+		if err != nil {
+			a.logger.Error("Failed to create automatic todo plan", "error", err)
+			// Continue without plan
+		} else if planResponse != "" {
+			// Add plan creation to context
+			a.AddAssistantMessage(planResponse)
+		}
+	}
+
 	// Generate response
 	a.logger.Debug("Generating initial response")
 	response, err := a.generateResponse(ctx)
@@ -193,6 +205,12 @@ func (a *agent) ProcessMessage(ctx context.Context, message string) (string, err
 			a.logger.Error("Tool execution failed", "tool", toolCall.ToolName, "error", err)
 		} else {
 			a.logger.Debug("Tool execution succeeded", "tool", toolCall.ToolName)
+
+			// Auto-update todo status if we completed a task
+			if toolCall.ToolName == "todo_update" {
+				// Check if we need to analyze for next steps
+				a.checkAndSuggestNextTodoSteps(ctx)
+			}
 		}
 
 		// Add tool result to context
@@ -859,89 +877,6 @@ func tryExtractXMLElement(xmlStr string, elementName string) string {
 	return strings.TrimSpace(xmlStr[openEnd:closeStart])
 }
 
-// parseXMLParams parses parameters from XML data using Go's standard XML package
-func parseXMLParams(xmlData []byte, logger *logger.Logger) (map[string]interface{}, error) {
-	params := make(map[string]interface{})
-
-	// Create a decoder for the XML data
-	decoder := xml.NewDecoder(strings.NewReader(string(xmlData)))
-
-	var currentElement string
-
-	// Process XML tokens
-	for {
-		token, err := decoder.Token()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			logger.Error("Error parsing XML parameters", "error", err)
-			return nil, err
-		}
-
-		switch t := token.(type) {
-		case xml.StartElement:
-			// We're starting a new element
-			currentElement = t.Name.Local
-
-		case xml.EndElement:
-			// Element is closing, clear current element if it matches
-			if t.Name.Local == currentElement {
-				currentElement = ""
-			}
-
-		case xml.CharData:
-			// We have character data (the parameter value)
-			if currentElement != "" && currentElement != "params" {
-				// Convert value to string and trim whitespace
-				paramValue := strings.TrimSpace(string(t))
-
-				// Skip empty values
-				if paramValue == "" {
-					continue
-				}
-
-				// Try to convert to appropriate types
-				switch {
-				case paramValue == "true" || paramValue == "false":
-					// Boolean
-					params[currentElement] = paramValue == "true"
-					logger.Debug("Parsed XML parameter as boolean", "name", currentElement, "value", params[currentElement])
-
-				case regexp.MustCompile(`^-?\d+$`).MatchString(paramValue):
-					// Integer
-					intVal, err := strconv.Atoi(paramValue)
-					if err == nil {
-						params[currentElement] = intVal
-						logger.Debug("Parsed XML parameter as integer", "name", currentElement, "value", params[currentElement])
-					} else {
-						params[currentElement] = paramValue
-						logger.Debug("Failed to parse numeric value, using as string", "name", currentElement, "value", paramValue)
-					}
-
-				case regexp.MustCompile(`^-?\d+\.\d+$`).MatchString(paramValue):
-					// Float
-					floatVal, err := strconv.ParseFloat(paramValue, 64)
-					if err == nil {
-						params[currentElement] = floatVal
-						logger.Debug("Parsed XML parameter as float", "name", currentElement, "value", params[currentElement])
-					} else {
-						params[currentElement] = paramValue
-						logger.Debug("Failed to parse float value, using as string", "name", currentElement, "value", paramValue)
-					}
-
-				default:
-					// String
-					params[currentElement] = paramValue
-					logger.Debug("Parsed XML parameter as string", "name", currentElement, "value", paramValue)
-				}
-			}
-		}
-	}
-
-	return params, nil
-}
-
 // extractXMLParams is the fallback method for parsing parameters when standard XML parsing fails
 func extractXMLParams(paramsXML string, logger *logger.Logger) map[string]interface{} {
 	params := make(map[string]interface{})
@@ -1133,4 +1068,109 @@ func agentEscapeXML(s string) string {
 	s = strings.ReplaceAll(s, "\"", "&quot;")
 	s = strings.ReplaceAll(s, "'", "&apos;")
 	return s
+}
+
+// shouldCreateTodoPlan analyzes if a message warrants automatic todo planning
+func (a *agent) shouldCreateTodoPlan(message string) bool {
+	// Look for indicators of complex tasks
+	complexIndicators := []string{
+		"implement", "create", "build", "develop", "design",
+		"refactor", "optimize", "fix multiple", "add several",
+		"integrate", "migrate", "setup", "configure",
+		"and then", "after that", "followed by", "next",
+		"multiple", "several", "various", "different",
+		"step by step", "plan", "todo", "task list",
+	}
+
+	messageLower := strings.ToLower(message)
+	indicatorCount := 0
+
+	for _, indicator := range complexIndicators {
+		if strings.Contains(messageLower, indicator) {
+			indicatorCount++
+		}
+	}
+
+	// Also check for numbered lists or bullet points
+	if regexp.MustCompile(`\d+\.|[-*•]`).MatchString(message) {
+		indicatorCount += 2
+	}
+
+	// Check message length as an indicator of complexity
+	if len(message) > 200 {
+		indicatorCount++
+	}
+
+	// Create plan if we have multiple indicators
+	return indicatorCount >= 2
+}
+
+// createAutomaticTodoPlan creates a todo plan based on the user's message
+func (a *agent) createAutomaticTodoPlan(ctx context.Context, message string) (string, error) {
+	// Create a special prompt to analyze and create a plan
+	planPrompt := fmt.Sprintf(`Based on this request, create a todo plan:
+
+"%s"
+
+Use the todo_create tool with these exact parameters:
+- name: A descriptive name for the plan
+- description: What this plan aims to achieve
+- items: An array of task objects, each with:
+  - content: The task description
+  - priority: "high", "medium", or "low"
+  - dependencies: Array of task IDs that must complete first (optional)
+
+Example format:
+<tool>
+  <name>todo_create</name>
+  <params>
+    <name>Feature Implementation Plan</name>
+    <description>Plan for implementing the new user feature</description>
+    <items>
+      <content>Design the feature</content>
+      <priority>high</priority>
+    </items>
+    <items>
+      <content>Implement backend</content>
+      <priority>high</priority>
+      <dependencies>task_1</dependencies>
+    </items>
+  </params>
+</tool>`, message)
+
+	// Temporarily add this as a system message
+	a.context.AddSystemMessage(planPrompt)
+
+	// Generate response which should create a todo plan
+	response, err := a.generateResponse(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Process any tool calls in the response
+	toolCall, _, hasTool := a.extractToolCall(response)
+	if hasTool && toolCall.ToolName == "todo_create" {
+		result, err := a.ExecuteTool(ctx, toolCall.ToolName, toolCall.Params)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%v", result), nil
+	}
+
+	return response, nil
+}
+
+// checkAndSuggestNextTodoSteps analyzes current todo progress and suggests next steps
+func (a *agent) checkAndSuggestNextTodoSteps(ctx context.Context) {
+	// Use todo_analyze tool to get recommendations
+	result, err := a.ExecuteTool(ctx, "todo_analyze", map[string]interface{}{})
+	if err != nil {
+		a.logger.Error("Failed to analyze todo progress", "error", err)
+		return
+	}
+
+	// Add analysis to context for the next response
+	if result != nil {
+		a.context.AddSystemMessage(fmt.Sprintf("Todo Progress Update:\n%v\n\nConsider working on the recommended next task.", result))
+	}
 }
