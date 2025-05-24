@@ -163,8 +163,14 @@ func (t *FileWriteTool) Execute(ctx context.Context, params map[string]interface
 		flag |= os.O_TRUNC
 	}
 
+	// Get original file permissions if file exists
+	var fileMode os.FileMode = 0644
+	if info, err := os.Stat(filePath); err == nil {
+		fileMode = info.Mode()
+	}
+
 	// Open file
-	file, err := os.OpenFile(filePath, flag, 0644)
+	file, err := os.OpenFile(filePath, flag, fileMode)
 	if err != nil {
 		return nil, &ErrToolExecution{
 			ToolName: t.Name(),

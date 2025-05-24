@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"codezilla/pkg/logger"
@@ -43,6 +44,7 @@ type ToolResult struct {
 
 // Context manages the conversation context for an agent
 type Context struct {
+	mu             sync.RWMutex
 	Messages       []Message
 	MaxTokens      int
 	CurrentTokens  int
@@ -67,6 +69,9 @@ func NewContext(maxTokens int) *Context {
 
 // ClearContext clears all non-system messages from the context
 func (c *Context) ClearContext() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	// Keep only system messages
 	var systemMessages []Message
 	var systemTokenCount int
@@ -151,6 +156,9 @@ func (c *Context) AddToolResultMessage(result interface{}, err error) {
 
 // AddMessage adds a message to the context
 func (c *Context) AddMessage(msg Message) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	// Estimate token count (very rough)
 	tokens := estimateTokens(msg.Content)
 	if msg.ToolCall != nil {
@@ -258,6 +266,9 @@ func (c *Context) TruncateIfNeeded() {
 
 // GetFormattedMessages returns messages formatted for the LLM
 func (c *Context) GetFormattedMessages() []map[string]interface{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	c.logger.Debug("Formatting messages for LLM", "messageCount", len(c.Messages))
 	formatted := make([]map[string]interface{}, 0, len(c.Messages))
 
@@ -291,6 +302,13 @@ func (c *Context) GetFormattedMessages() []map[string]interface{} {
 	}
 
 	return formatted
+}
+
+// GetMessages returns a copy of all messages
+func (c *Context) GetMessages() []Message {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]Message{}, c.Messages...)
 }
 
 // formatToolResult formats a tool result for display in the conversation using XML

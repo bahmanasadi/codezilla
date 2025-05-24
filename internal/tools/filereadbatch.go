@@ -182,15 +182,11 @@ func (t *FileReadBatchTool) readSingleFile(filePath string, maxFileSize int64, i
 		Path: filePath,
 	}
 
-	// Expand ~ to home directory
-	expandedPath := filePath
-	if len(filePath) > 0 && filePath[0] == '~' {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			result.Error = fmt.Sprintf("failed to expand home directory: %v", err)
-			return result
-		}
-		expandedPath = filepath.Join(homeDir, filePath[1:])
+	// Validate and clean the path
+	expandedPath, err := ValidateAndCleanPath(filePath)
+	if err != nil {
+		result.Error = fmt.Sprintf("invalid file path: %v", err)
+		return result
 	}
 
 	// Get file info

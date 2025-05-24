@@ -134,6 +134,14 @@ func NewApp(config *cli.Config, ui ui.UI) (*App, error) {
 	}, nil
 }
 
+// Close cleans up application resources
+func (app *App) Close() error {
+	if app.logger != nil {
+		return app.logger.Close()
+	}
+	return nil
+}
+
 // Run starts the main application loop
 func (app *App) Run(ctx context.Context) error {
 	// Show UI elements

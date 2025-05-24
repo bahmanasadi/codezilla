@@ -129,6 +129,16 @@ func (t *ProjectScanTool) Execute(ctx context.Context, params map[string]interfa
 		}
 	}
 
+	// Validate and clean the path
+	dir, err := ValidateAndCleanPath(dir)
+	if err != nil {
+		return nil, &ErrToolExecution{
+			ToolName: t.Name(),
+			Message:  "invalid directory path",
+			Err:      err,
+		}
+	}
+
 	// Validate directory
 	fileInfo, err := os.Stat(dir)
 	if err != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // FileReadTool allows reading file contents
@@ -55,17 +54,14 @@ func (t *FileReadTool) Execute(ctx context.Context, params map[string]interface{
 		}
 	}
 
-	// Expand ~ to home directory
-	if len(filePath) > 0 && filePath[0] == '~' {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return nil, &ErrToolExecution{
-				ToolName: t.Name(),
-				Message:  "failed to expand home directory",
-				Err:      err,
-			}
+	// Validate and clean the path
+	filePath, err := ValidateAndCleanPath(filePath)
+	if err != nil {
+		return nil, &ErrToolExecution{
+			ToolName: t.Name(),
+			Message:  "invalid file path",
+			Err:      err,
 		}
-		filePath = filepath.Join(homeDir, filePath[1:])
 	}
 
 	// Make sure the file exists

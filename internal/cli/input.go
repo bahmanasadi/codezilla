@@ -51,6 +51,7 @@ type SimpleInput struct {
 	oldState     *term.State
 	width        int
 	height       int
+	stopWatch    chan bool
 }
 
 // NewReadlineInput creates a new input reader with history support
@@ -78,6 +79,7 @@ func NewReadlineInput(prompt string, historyFile string) (*SimpleInput, error) {
 	// Check if stdin is a terminal
 	if term.IsTerminal(input.fd) {
 		input.rawMode = true
+		input.stopWatch = make(chan bool, 1)
 		go input.watchTerminalSize()
 	}
 
@@ -94,12 +96,17 @@ func (s *SimpleInput) watchTerminalSize() {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if width, height, err := term.GetSize(s.fd); err == nil {
-			s.mu.Lock()
-			s.width = width
-			s.height = height
-			s.mu.Unlock()
+	for {
+		select {
+		case <-s.stopWatch:
+			return
+		case <-ticker.C:
+			if width, height, err := term.GetSize(s.fd); err == nil {
+				s.mu.Lock()
+				s.width = width
+				s.height = height
+				s.mu.Unlock()
+			}
 		}
 	}
 }
@@ -193,13 +200,13 @@ func (s *SimpleInput) ReadLine() (string, error) {
 	if err != nil {
 		return s.readLineSimple()
 	}
-	s.oldState = oldState
 	defer func() {
 		if err := term.Restore(s.fd, oldState); err != nil {
 			// Log error but don't return it as we're in a deferred function
 			fmt.Fprintf(os.Stderr, "Failed to restore terminal: %v\n", err)
 		}
 	}()
+	s.oldState = oldState
 
 	// Reset display state
 	lastLineCount = 0
@@ -483,6 +490,11 @@ func (s *SimpleInput) readLineSimple() (string, error) {
 
 // Close cleans up resources
 func (s *SimpleInput) Close() error {
+	// Stop the terminal size watcher
+	if s.stopWatch != nil {
+		close(s.stopWatch)
+	}
+
 	if s.rawMode && s.oldState != nil {
 		if err := term.Restore(s.fd, s.oldState); err != nil {
 			return fmt.Errorf("failed to restore terminal: %w", err)

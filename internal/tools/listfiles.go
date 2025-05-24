@@ -76,6 +76,16 @@ func (t *ListFilesTool) Execute(ctx context.Context, params map[string]interface
 		}
 	}
 
+	// Validate and clean the path
+	dir, err := ValidateAndCleanPath(dir)
+	if err != nil {
+		return nil, &ErrToolExecution{
+			ToolName: t.Name(),
+			Message:  "invalid directory path",
+			Err:      err,
+		}
+	}
+
 	// Make sure the directory exists
 	fileInfo, err := os.Stat(dir)
 	if err != nil {

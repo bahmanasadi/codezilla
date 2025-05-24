@@ -101,6 +101,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to initialize application: %v\n", err)
 		os.Exit(1)
 	}
+	defer app.Close()
 
 	// Setup signal handling
 	ctx, cancel := context.WithCancel(context.Background())

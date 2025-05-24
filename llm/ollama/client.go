@@ -287,12 +287,13 @@ func (c *clientImpl) StreamGenerate(ctx context.Context, request GenerateRequest
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return nil, fmt.Errorf("unsuccessful response: %d %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	responseChannel := make(chan StreamResponse)
+	// Buffer the channel to prevent goroutine leak if consumer stops reading
+	responseChannel := make(chan StreamResponse, 10)
 
 	go func() {
 		defer close(responseChannel)

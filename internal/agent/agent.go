@@ -632,6 +632,12 @@ func (a *agent) ExecuteTool(ctx context.Context, toolName string, params map[str
 		return nil, fmt.Errorf("%w: %s", ErrToolNotFound, toolName)
 	}
 
+	// Nil check for tool
+	if tool == nil {
+		a.logger.Error("Tool is nil", "tool", toolName)
+		return nil, fmt.Errorf("tool %s is nil", toolName)
+	}
+
 	// Log tool execution start in XML format
 	fmt.Fprintf(os.Stderr, "\n==== EXECUTING TOOL ====\n")
 	fmt.Fprintf(os.Stderr, "<tool_execution>\n")

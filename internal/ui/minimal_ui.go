@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"codezilla/internal/cli"
+	"golang.org/x/term"
 )
 
 // MinimalUI implements a minimal UI with no colors or fancy formatting
@@ -142,7 +143,18 @@ func (ui *MinimalUI) ReadLine() (string, error) {
 
 func (ui *MinimalUI) ReadPassword(prompt string) (string, error) {
 	fmt.Print(prompt)
-	// In minimal UI, just read normally (no hiding)
+	// Try to read password securely
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		// Read password without echo
+		passBytes, err := term.ReadPassword(fd)
+		fmt.Println() // Add newline after password input
+		if err != nil {
+			return "", err
+		}
+		return string(passBytes), nil
+	}
+	// Fallback for non-terminal (e.g., piped input)
 	reader := bufio.NewReader(os.Stdin)
 	pass, err := reader.ReadString('\n')
 	return strings.TrimSpace(pass), err
