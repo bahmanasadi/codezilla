@@ -39,8 +39,23 @@ func NewApp(config *cli.Config, ui ui.UI) (*App, error) {
 		return nil, fmt.Errorf("failed to initialize logger: %w", err)
 	}
 
-	// Initialize LLM client
-	llmClient := ollama.NewClient(ollama.WithBaseURL(config.OllamaURL))
+	// Initialize LLM client with authentication
+	clientOptions := []func(*ollama.ClientOptions){
+		ollama.WithBaseURL(config.OllamaURL),
+	}
+
+	// Add authentication if configured
+	if config.OllamaAPIKey != "" {
+		clientOptions = append(clientOptions, ollama.WithAPIKey(config.OllamaAPIKey))
+	} else if config.OllamaUsername != "" && config.OllamaPassword != "" {
+		clientOptions = append(clientOptions, ollama.WithBasicAuth(config.OllamaUsername, config.OllamaPassword))
+	}
+
+	if len(config.OllamaHeaders) > 0 {
+		clientOptions = append(clientOptions, ollama.WithHeaders(config.OllamaHeaders))
+	}
+
+	llmClient := ollama.NewClient(clientOptions...)
 
 	// Test connection
 	ctx := context.Background()

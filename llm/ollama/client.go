@@ -28,12 +28,23 @@ type Client interface {
 type ClientOptions struct {
 	BaseURL    string
 	HTTPClient *http.Client
+	// Authentication options
+	APIKey   string
+	AuthType string // "bearer", "basic", or "custom"
+	Username string
+	Password string
+	Headers  map[string]string
 }
 
 // clientImpl implements the Client interface
 type clientImpl struct {
 	baseURL    string
 	httpClient *http.Client
+	apiKey     string
+	authType   string
+	username   string
+	password   string
+	headers    map[string]string
 }
 
 // NewClient creates a new Ollama client with the given options
@@ -50,6 +61,11 @@ func NewClient(options ...func(*ClientOptions)) Client {
 	return &clientImpl{
 		baseURL:    opts.BaseURL,
 		httpClient: opts.HTTPClient,
+		apiKey:     opts.APIKey,
+		authType:   opts.AuthType,
+		username:   opts.Username,
+		password:   opts.Password,
+		headers:    opts.Headers,
 	}
 }
 
@@ -64,6 +80,32 @@ func WithBaseURL(url string) func(*ClientOptions) {
 func WithHTTPClient(client *http.Client) func(*ClientOptions) {
 	return func(o *ClientOptions) {
 		o.HTTPClient = client
+	}
+}
+
+// WithAPIKey sets the API key for authentication
+func WithAPIKey(apiKey string) func(*ClientOptions) {
+	return func(o *ClientOptions) {
+		o.APIKey = apiKey
+		if o.AuthType == "" {
+			o.AuthType = "bearer"
+		}
+	}
+}
+
+// WithBasicAuth sets basic authentication credentials
+func WithBasicAuth(username, password string) func(*ClientOptions) {
+	return func(o *ClientOptions) {
+		o.Username = username
+		o.Password = password
+		o.AuthType = "basic"
+	}
+}
+
+// WithHeaders sets custom headers for requests
+func WithHeaders(headers map[string]string) func(*ClientOptions) {
+	return func(o *ClientOptions) {
+		o.Headers = headers
 	}
 }
 
@@ -175,6 +217,7 @@ func (c *clientImpl) Generate(ctx context.Context, request GenerateRequest) (*Ge
 		return nil, fmt.Errorf("failed to create request to %s: %w", generateURL, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.applyAuth(req)
 
 	// Skipping output to keep messages minimal
 
@@ -222,6 +265,7 @@ func (c *clientImpl) Chat(ctx context.Context, request ChatRequest) (*ChatRespon
 		return nil, fmt.Errorf("failed to create request to %s: %w", chatURL, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.applyAuth(req)
 
 	// Skipping debug output to reduce noise
 
@@ -280,6 +324,7 @@ func (c *clientImpl) StreamGenerate(ctx context.Context, request GenerateRequest
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.applyAuth(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -331,6 +376,7 @@ func (c *clientImpl) ListModels(ctx context.Context) (*ListModelsResponse, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+	c.applyAuth(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -349,4 +395,26 @@ func (c *clientImpl) ListModels(ctx context.Context) (*ListModelsResponse, error
 	}
 
 	return &response, nil
+}
+
+// applyAuth adds authentication headers to the request
+func (c *clientImpl) applyAuth(req *http.Request) {
+	// Apply custom headers first
+	for key, value := range c.headers {
+		req.Header.Set(key, value)
+	}
+
+	// Apply authentication based on type
+	switch c.authType {
+	case "bearer":
+		if c.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
+	case "basic":
+		if c.username != "" && c.password != "" {
+			req.SetBasicAuth(c.username, c.password)
+		}
+	case "custom":
+		// Custom auth is handled by headers
+	}
 }

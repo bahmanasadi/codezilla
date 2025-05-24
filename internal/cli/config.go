@@ -16,6 +16,13 @@ type Config struct {
 	MaxTokens    int     `json:"max_tokens"`
 	SystemPrompt string  `json:"system_prompt"`
 
+	// Authentication
+	OllamaAPIKey   string            `json:"ollama_api_key,omitempty"`
+	OllamaAuthType string            `json:"ollama_auth_type,omitempty"` // "bearer", "basic", or "custom"
+	OllamaUsername string            `json:"ollama_username,omitempty"`
+	OllamaPassword string            `json:"ollama_password,omitempty"`
+	OllamaHeaders  map[string]string `json:"ollama_headers,omitempty"`
+
 	// Log configuration
 	LogFile   string `json:"log_file"`
 	LogLevel  string `json:"log_level"`
@@ -119,6 +126,24 @@ func LoadConfig(path string) (*Config, error) {
 Current working directory: %s
 
 When the user refers to "the project", "this project", "search", or uses relative paths, assume they mean the current working directory and its contents. Always strive to be helpful, accurate, and safe in your responses.`, cwd)
+
+	// Check environment variables for authentication (these override config file)
+	if apiKey := os.Getenv("OLLAMA_API_KEY"); apiKey != "" {
+		config.OllamaAPIKey = apiKey
+		if config.OllamaAuthType == "" {
+			config.OllamaAuthType = "bearer"
+		}
+	}
+	if username := os.Getenv("OLLAMA_USERNAME"); username != "" {
+		config.OllamaUsername = username
+		config.OllamaAuthType = "basic"
+	}
+	if password := os.Getenv("OLLAMA_PASSWORD"); password != "" {
+		config.OllamaPassword = password
+	}
+	if baseURL := os.Getenv("OLLAMA_BASE_URL"); baseURL != "" {
+		config.OllamaURL = baseURL
+	}
 
 	return config, nil
 }
