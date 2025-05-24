@@ -256,8 +256,13 @@ func (a *agent) generateResponse(ctx context.Context) (string, error) {
 		for _, tool := range a.toolRegistry.ListTools() {
 			toolsInfo += fmt.Sprintf("- %s: %s\n", tool.Name(), tool.Description())
 		}
-		toolsInfo += "\nWhen you need to use a tool, format your response using XML like this:\n"
+		toolsInfo += "\nWhen you need to use a tool, you can format your response in one of these ways:\n\n"
+		toolsInfo += "1. XML format:\n"
 		toolsInfo += "<tool>\n  <name>toolName</name>\n  <params>\n    <param1>value1</param1>\n    <param2>value2</param2>\n  </params>\n</tool>\n\n"
+		toolsInfo += "2. JSON format:\n"
+		toolsInfo += "```json\n{\n  \"tool\": \"toolName\",\n  \"params\": {\n    \"param1\": \"value1\",\n    \"param2\": \"value2\"\n  }\n}\n```\n\n"
+		toolsInfo += "3. For bash/shell commands, use code blocks:\n"
+		toolsInfo += "```bash\ncommand here\n```\n\n"
 	}
 
 	// First process system messages
@@ -391,6 +396,67 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 
 	// Add more debug logging when fixing tool detection
 	a.logger.Debug("Full response for tool detection", "response", response)
+
+	// Try JSON format first (most structured)
+	jsonPattern := regexp.MustCompile("(?s)```json\\s*\\n(.*?)\\n?```")
+	jsonMatches := jsonPattern.FindStringSubmatch(response)
+	if len(jsonMatches) >= 2 {
+		jsonContent := strings.TrimSpace(jsonMatches[1])
+		a.logger.Debug("Found JSON code block", "content", jsonContent)
+
+		// Try to parse as JSON tool call
+		var jsonToolCall struct {
+			Tool   string                 `json:"tool"`
+			Name   string                 `json:"name"` // Alternative field name
+			Params map[string]interface{} `json:"params"`
+		}
+
+		if err := json.Unmarshal([]byte(jsonContent), &jsonToolCall); err == nil {
+			toolName := jsonToolCall.Tool
+			if toolName == "" {
+				toolName = jsonToolCall.Name
+			}
+
+			if toolName != "" && jsonToolCall.Params != nil {
+				a.logger.Debug("Successfully parsed JSON tool call", "toolName", toolName)
+
+				result := &ToolCall{
+					ToolName: toolName,
+					Params:   jsonToolCall.Params,
+				}
+
+				// Remove the JSON block from response
+				loc := jsonPattern.FindStringIndex(response)
+				remainingText := response[:loc[0]] + response[loc[1]:]
+				remainingText = strings.TrimSpace(remainingText)
+
+				return result, remainingText, true
+			}
+		}
+	}
+
+	// Check for bash/shell code blocks
+	bashPattern := regexp.MustCompile("(?s)```(bash|sh|shell|terminal|console)\\s*\\n(.*?)\\n?```")
+	bashMatches := bashPattern.FindStringSubmatch(response)
+	if len(bashMatches) >= 3 {
+		command := strings.TrimSpace(bashMatches[2])
+		a.logger.Debug("Found bash code block", "language", bashMatches[1], "command", command)
+
+		// Create tool call for bash execution
+		result := &ToolCall{
+			ToolName: "execute",
+			Params: map[string]interface{}{
+				"command": command,
+			},
+		}
+
+		// Remove the bash block from response
+		loc := bashPattern.FindStringIndex(response)
+		remainingText := response[:loc[0]] + response[loc[1]:]
+		remainingText = strings.TrimSpace(remainingText)
+
+		return result, remainingText, true
+	}
 
 	// Pattern to match <tool>...</tool> sections, more flexible with whitespace and formatting
 	pattern := regexp.MustCompile(`(?s)<tool>[\s\n]*(.*?)[\s\n]*</tool>`)

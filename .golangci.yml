@@ -30,9 +30,10 @@ issues:
         - gosec
   max-issues-per-linter: 0
   max-same-issues: 0
+  exclude-dirs:
+    - build
+    - vendor
 
 run:
   timeout: 5m
-  skip-dirs:
-    - build
-    - vendor
+  go: "1.22"

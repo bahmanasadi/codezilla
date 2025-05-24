@@ -2,7 +2,7 @@ module codezilla
 
 go 1.23.0
 
-toolchain go1.23.8
+toolchain go1.24.2
 
 require (
 	github.com/mattn/go-runewidth v0.0.16
