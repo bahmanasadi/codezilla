@@ -1,42 +1,39 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
-// TodoPersistence handles saving and loading todo plans
+// TodoPersistence handles saving and loading todo state
 type TodoPersistence struct {
-	mu       sync.Mutex
 	dataDir  string
 	fileName string
 }
 
-// NewTodoPersistence creates a new persistence handler
+// NewTodoPersistence creates a new persistence manager
 func NewTodoPersistence(dataDir string) *TodoPersistence {
 	return &TodoPersistence{
 		dataDir:  dataDir,
-		fileName: "todo_plans.json",
+		fileName: "todo_state.json",
 	}
 }
 
-// TodoState represents the complete state of all todo plans
+// TodoState represents the persistent state
 type TodoState struct {
 	Plans         map[string]*TodoPlan `json:"plans"`
 	CurrentPlanID string               `json:"current_plan_id"`
 }
 
-// Save persists the current todo state to disk
+// Save saves the current todo state to disk
 func (tp *TodoPersistence) Save(manager *TodoManager) error {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
+	if manager == nil {
+		return fmt.Errorf("manager is nil")
+	}
 
-	// Ensure data directory exists
+	// Ensure directory exists
 	if err := os.MkdirAll(tp.dataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
@@ -54,28 +51,26 @@ func (tp *TodoPersistence) Save(manager *TodoManager) error {
 	}
 
 	filePath := filepath.Join(tp.dataDir, tp.fileName)
-	if err := ioutil.WriteFile(filePath, data, 0644); err != nil {
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write todo state: %w", err)
 	}
 
 	return nil
 }
 
-// Load restores todo state from disk
+// Load loads the todo state from disk
 func (tp *TodoPersistence) Load(manager *TodoManager) error {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-
-	filePath := filepath.Join(tp.dataDir, tp.fileName)
-
-	// Check if file exists
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		// No saved state, this is fine
-		return nil
+	if manager == nil {
+		return fmt.Errorf("manager is nil")
 	}
 
-	data, err := ioutil.ReadFile(filePath)
+	filePath := filepath.Join(tp.dataDir, tp.fileName)
+	data, err := os.ReadFile(filePath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// No saved state, that's okay
+			return nil
+		}
 		return fmt.Errorf("failed to read todo state: %w", err)
 	}
 
@@ -107,8 +102,11 @@ var todoPersistence *TodoPersistence
 
 func initTodoPersistence() {
 	// Use a hidden directory in the project root for persistence
-	workDir, _ := os.Getwd()
-	dataDir := filepath.Join(workDir, ".codezilla", "todos")
+	dataDir := ".codezilla"
+	if home, err := os.UserHomeDir(); err == nil {
+		dataDir = filepath.Join(home, ".codezilla", "todos")
+	}
+
 	todoPersistence = NewTodoPersistence(dataDir)
 
 	// Load existing state
@@ -117,7 +115,7 @@ func initTodoPersistence() {
 	}
 }
 
-// Update todo tools to auto-save after modifications
+// wrapWithAutoSave wraps a todo operation with automatic persistence
 func wrapWithAutoSave(original func(map[string]interface{}) (string, error)) func(map[string]interface{}) (string, error) {
 	return func(params map[string]interface{}) (string, error) {
 		result, err := original(params)
@@ -128,83 +126,7 @@ func wrapWithAutoSave(original func(map[string]interface{}) (string, error)) fun
 	}
 }
 
-// TodoClearTool clears completed tasks from a plan
-type TodoClearTool struct{}
-
-func (t TodoClearTool) Name() string {
-	return "todo_clear"
-}
-
-func (t TodoClearTool) Description() string {
-	return "Clear completed or cancelled tasks from a todo plan"
-}
-
-func (t TodoClearTool) ParameterSchema() JSONSchema {
-	return JSONSchema{
-		Type: "object",
-		Properties: map[string]JSONSchema{
-			"plan_id": {Type: "string", Description: "Plan ID to clear (optional, uses current plan)"},
-			"status":  {Type: "string", Enum: []interface{}{"completed", "cancelled", "both"}, Default: "completed"},
-		},
-	}
-}
-
-func (t TodoClearTool) Execute(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-	globalTodoManager.mu.Lock()
-	defer globalTodoManager.mu.Unlock()
-
-	planID := globalTodoManager.currentPlanID
-	if pid, ok := params["plan_id"].(string); ok {
-		planID = pid
-	}
-
-	plan, exists := globalTodoManager.plans[planID]
-	if !exists {
-		return "", fmt.Errorf("plan not found: %s", planID)
-	}
-
-	statusToClear := "completed"
-	if s, ok := params["status"].(string); ok {
-		statusToClear = s
-	}
-
-	var remaining []TodoItem
-	var cleared int
-
-	for _, item := range plan.Items {
-		shouldClear := false
-		switch statusToClear {
-		case "completed":
-			shouldClear = item.Status == "completed"
-		case "cancelled":
-			shouldClear = item.Status == "cancelled"
-		case "both":
-			shouldClear = item.Status == "completed" || item.Status == "cancelled"
-		}
-
-		if shouldClear {
-			cleared++
-		} else {
-			remaining = append(remaining, item)
-		}
-	}
-
-	plan.Items = remaining
-
-	if todoPersistence != nil {
-		todoPersistence.AutoSave(globalTodoManager)()
-	}
-
-	return fmt.Sprintf("Cleared %d %s tasks from plan '%s'. %d tasks remaining.",
-		cleared, statusToClear, plan.Name, len(remaining)), nil
-}
-
 func init() {
 	// Initialize persistence
 	initTodoPersistence()
-}
-
-// GetTodoClearTool returns the todo clear tool
-func GetTodoClearTool() Tool {
-	return TodoClearTool{}
 }

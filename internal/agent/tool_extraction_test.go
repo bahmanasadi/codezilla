@@ -28,30 +28,30 @@ func TestExtractToolCallFormats(t *testing.T) {
 <tool>
   <name>fileRead</name>
   <params>
-    <path>/etc/hosts</path>
+    <file_path>/etc/hosts</file_path>
   </params>
 </tool>`,
 			expectTool: true,
 			toolName:   "fileRead",
-			paramName:  "path",
+			paramName:  "file_path",
 			paramValue: "/etc/hosts",
 		},
 		{
 			name: "JSON format",
 			response: `Let me read that file:
-` + "```json\n{\n  \"tool\": \"fileRead\",\n  \"params\": {\n    \"path\": \"/etc/hosts\"\n  }\n}\n```",
+` + "```json\n{\n  \"tool\": \"fileRead\",\n  \"params\": {\n    \"file_path\": \"/etc/hosts\"\n  }\n}\n```",
 			expectTool: true,
 			toolName:   "fileRead",
-			paramName:  "path",
+			paramName:  "file_path",
 			paramValue: "/etc/hosts",
 		},
 		{
 			name: "JSON with 'name' field",
 			response: `Reading the file:
-` + "```json\n{\n  \"name\": \"fileWrite\",\n  \"params\": {\n    \"path\": \"/tmp/test.txt\",\n    \"content\": \"Hello World\"\n  }\n}\n```",
+` + "```json\n{\n  \"name\": \"fileWrite\",\n  \"params\": {\n    \"file_path\": \"/tmp/test.txt\",\n    \"content\": \"Hello World\"\n  }\n}\n```",
 			expectTool: true,
 			toolName:   "fileWrite",
-			paramName:  "path",
+			paramName:  "file_path",
 			paramValue: "/tmp/test.txt",
 		},
 		{
@@ -108,7 +108,7 @@ func TestExtractToolCallFormats(t *testing.T) {
 				if tt.paramName != "" {
 					val, ok := toolCall.Params[tt.paramName]
 					if !ok {
-						t.Errorf("Parameter %q not found", tt.paramName)
+						t.Errorf("Parameter %q not found, available params: %v", tt.paramName, toolCall.Params)
 					} else if val != tt.paramValue {
 						t.Errorf("Parameter %q = %v, want %v", tt.paramName, val, tt.paramValue)
 					}

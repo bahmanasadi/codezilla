@@ -9,37 +9,42 @@ func TestPermissionManager(t *testing.T) {
 	tests := []struct {
 		name           string
 		toolName       string
-		defaultPerm    string
+		defaultPerm    PermissionLevel
 		userResponse   PermissionResponse
 		expectCallback bool
+		expectGranted  bool
 	}{
 		{
 			name:           "Never ask permission",
 			toolName:       "fileRead",
-			defaultPerm:    "never_ask",
+			defaultPerm:    NeverAsk,
 			userResponse:   PermissionResponse{},
 			expectCallback: false,
+			expectGranted:  true,
 		},
 		{
 			name:           "Always ask permission - granted",
 			toolName:       "fileWrite",
-			defaultPerm:    "always_ask",
+			defaultPerm:    AlwaysAsk,
 			userResponse:   PermissionResponse{Granted: true, RememberMe: false},
 			expectCallback: true,
+			expectGranted:  true,
 		},
 		{
 			name:           "Always ask permission - denied",
 			toolName:       "execute",
-			defaultPerm:    "always_ask",
+			defaultPerm:    AlwaysAsk,
 			userResponse:   PermissionResponse{Granted: false, RememberMe: false},
 			expectCallback: true,
+			expectGranted:  false,
 		},
 		{
 			name:           "Remember permission",
 			toolName:       "fileWrite",
-			defaultPerm:    "always_ask",
+			defaultPerm:    AskOnce,
 			userResponse:   PermissionResponse{Granted: true, RememberMe: true},
 			expectCallback: true,
+			expectGranted:  true,
 		},
 	}
 
@@ -58,21 +63,16 @@ func TestPermissionManager(t *testing.T) {
 			})
 
 			// Set default permission
-			pm.SetDefaultPermission(tt.toolName, tt.defaultPerm)
+			pm.SetDefaultPermissionLevel(tt.toolName, tt.defaultPerm)
 
 			// Create context
 			ctx := context.Background()
-			toolCtx := &ToolContext{
-				ToolName: tt.toolName,
-			}
+
+			// Create a mock tool
+			mockTool := &FileReadTool{}
 
 			// Request permission
-			req := PermissionRequest{
-				Description: "Test action",
-				ToolContext: toolCtx,
-			}
-
-			resp, err := pm.RequestPermission(ctx, req)
+			granted, err := pm.RequestPermission(ctx, tt.toolName, map[string]interface{}{}, mockTool)
 			if err != nil {
 				t.Fatalf("RequestPermission failed: %v", err)
 			}
@@ -82,58 +82,72 @@ func TestPermissionManager(t *testing.T) {
 				t.Errorf("Callback called = %v, expected %v", callbackCalled, tt.expectCallback)
 			}
 
-			// Verify response based on permission type
-			if tt.defaultPerm == "never_ask" {
-				if !resp.Granted {
-					t.Error("Expected permission to be granted for 'never_ask'")
-				}
-			} else if tt.expectCallback {
-				if resp.Granted != tt.userResponse.Granted {
-					t.Errorf("Expected granted = %v, got %v", tt.userResponse.Granted, resp.Granted)
-				}
+			// Verify response
+			if granted != tt.expectGranted {
+				t.Errorf("Expected granted = %v, got %v", tt.expectGranted, granted)
 			}
 
 			// Test remember functionality
-			if tt.userResponse.RememberMe && resp.Granted {
+			if tt.userResponse.RememberMe && granted {
 				// Request permission again - should not call callback
 				callbackCalled = false
-				resp2, err := pm.RequestPermission(ctx, req)
+				granted2, err := pm.RequestPermission(ctx, tt.toolName, map[string]interface{}{}, mockTool)
 				if err != nil {
 					t.Fatalf("Second RequestPermission failed: %v", err)
 				}
 
 				if callbackCalled {
-					t.Error("Callback was called again after 'remember me'")
+					t.Error("Callback should not be called when permission is remembered")
 				}
 
-				if !resp2.Granted {
-					t.Error("Expected permission to be granted from memory")
+				if granted2 != granted {
+					t.Errorf("Remembered permission = %v, expected %v", granted2, granted)
 				}
 			}
 		})
 	}
 }
 
-func TestDefaultPermissions(t *testing.T) {
-	pm := NewPermissionManager(nil)
+func TestPermissionRequestFormatting(t *testing.T) {
+	// Test that permission requests are properly formatted
+	callbackCalled := false
+	var capturedRequest PermissionRequest
 
-	// Test default permissions from config
-	expectedDefaults := map[string]string{
-		"fileRead":      "never_ask",
-		"fileReadBatch": "never_ask",
-		"listFiles":     "never_ask",
-		"projectScan":   "never_ask",
-		"fileWrite":     "always_ask",
-		"execute":       "always_ask",
+	pm := NewPermissionManager(func(ctx context.Context, req PermissionRequest) (PermissionResponse, error) {
+		callbackCalled = true
+		capturedRequest = req
+		return PermissionResponse{Granted: true}, nil
+	})
+
+	pm.SetDefaultPermissionLevel("test", AlwaysAsk)
+
+	ctx := context.Background()
+	params := map[string]interface{}{
+		"file_path": "/etc/passwd",
+		"content":   "sensitive data",
 	}
 
-	// These should be set by the app when loading config
-	for tool, expected := range expectedDefaults {
-		pm.SetDefaultPermission(tool, expected)
+	mockTool := &FileWriteTool{}
 
-		// Verify it was set correctly
-		if pm.defaultPermissions[tool] != expected {
-			t.Errorf("Tool %s: expected %s, got %s", tool, expected, pm.defaultPermissions[tool])
-		}
+	_, err := pm.RequestPermission(ctx, "test", params, mockTool)
+	if err != nil {
+		t.Fatalf("RequestPermission failed: %v", err)
+	}
+
+	if !callbackCalled {
+		t.Fatal("Callback was not called")
+	}
+
+	// Verify request was properly populated
+	if capturedRequest.ToolContext.ToolName != "test" {
+		t.Errorf("Expected tool name 'test', got %s", capturedRequest.ToolContext.ToolName)
+	}
+
+	if len(capturedRequest.ToolContext.Params) != len(params) {
+		t.Errorf("Expected %d params, got %d", len(params), len(capturedRequest.ToolContext.Params))
+	}
+
+	if capturedRequest.Tool == nil {
+		t.Error("Tool should not be nil in request")
 	}
 }

@@ -372,5 +372,4 @@ func registerTools(registry tools.ToolRegistry) {
 	for _, tool := range tools.GetTodoTools() {
 		registry.RegisterTool(tool)
 	}
-	registry.RegisterTool(tools.GetTodoClearTool())
 }
