@@ -44,6 +44,18 @@ type Config struct {
 
 	// Working directory
 	WorkingDirectory string `json:"working_directory"`
+
+	// Analyzer settings
+	AnalyzerSettings AnalyzerSettings `json:"analyzer_settings"`
+}
+
+// AnalyzerSettings contains configuration for the file analyzer
+type AnalyzerSettings struct {
+	UseLLM             bool    `json:"use_llm"`             // Use LLM for file analysis
+	Concurrency        int     `json:"concurrency"`         // Number of files to analyze concurrently
+	RelevanceThreshold float64 `json:"relevance_threshold"` // Minimum relevance score
+	AnalysisTimeout    int     `json:"analysis_timeout"`    // Timeout per file in seconds
+	MaxFileSize        int64   `json:"max_file_size"`       // Maximum file size to analyze
 }
 
 // DefaultConfig returns the default configuration
@@ -75,16 +87,24 @@ When the user refers to "the project", "this project", "search", or uses relativ
 		DangerousToolsWarn:  true,
 		AlwaysAskPermission: false,
 		ToolPermissions: map[string]string{
-			"fileRead":      "never_ask",
-			"fileReadBatch": "never_ask",
-			"listFiles":     "never_ask",
-			"projectScan":   "never_ask",
-			"fileWrite":     "always_ask",
-			"execute":       "always_ask",
+			"fileRead":            "never_ask",
+			"fileReadBatch":       "never_ask",
+			"listFiles":           "never_ask",
+			"projectScan":         "never_ask",
+			"projectScanAnalyzer": "never_ask",
+			"fileWrite":           "always_ask",
+			"execute":             "always_ask",
 		},
 		ForceColor:       false,
 		NoColor:          false,
 		WorkingDirectory: cwd,
+		AnalyzerSettings: AnalyzerSettings{
+			UseLLM:             true,
+			Concurrency:        5,
+			RelevanceThreshold: 0.3,
+			AnalysisTimeout:    30,
+			MaxFileSize:        1024 * 1024, // 1MB
+		},
 	}
 }
 

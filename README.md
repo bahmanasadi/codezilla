@@ -124,6 +124,7 @@ Codezilla comes with a comprehensive set of tools that the AI assistant can use:
 
 3. **Project Analysis**:
    - `projectScan` - Scan project structure and generate summaries
+   - `projectScanAnalyzer` - Deep file-by-file analysis based on user queries
    - `diff` - Show differences between two text inputs
 
 ### Tool Call Formats

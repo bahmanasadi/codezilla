@@ -69,7 +69,7 @@ func NewApp(config *cli.Config, ui ui.UI) (*App, error) {
 
 	// Initialize tool registry
 	toolRegistry := tools.NewToolRegistry()
-	registerTools(toolRegistry)
+	registerTools(toolRegistry, llmClient, config, log)
 
 	// Create permission manager with interactive callback
 	permissionMgr := tools.NewPermissionManager(func(ctx context.Context, request tools.PermissionRequest) (tools.PermissionResponse, error) {
@@ -374,13 +374,20 @@ func (app *App) showTools() {
 }
 
 // registerTools registers all available tools
-func registerTools(registry tools.ToolRegistry) {
+func registerTools(registry tools.ToolRegistry, llmClient ollama.Client, config *cli.Config, logger *logger.Logger) {
 	// File operation tools
 	registry.RegisterTool(tools.NewFileReadTool())
 	registry.RegisterTool(tools.NewFileWriteTool())
 	registry.RegisterTool(tools.NewListFilesTool())
 	registry.RegisterTool(tools.NewFileReadBatchTool())
 	registry.RegisterTool(tools.NewProjectScanTool())
+
+	// Create analyzer factory and register analyzer tool
+	llmAdapter := NewLLMClientAdapter(llmClient)
+	analyzerFactory := tools.NewAnalyzerFactory(llmAdapter, logger)
+	analyzer := analyzerFactory.CreateAnalyzer(config.AnalyzerSettings.UseLLM)
+	registry.RegisterTool(tools.NewProjectScanAnalyzerTool(analyzer))
+
 	registry.RegisterTool(tools.NewExecuteTool(30))
 
 	// Todo management tools
