@@ -1,141 +1,229 @@
 # Codezilla
 
-A CLI agent tool powered by Ollama, inspired by Claude Code. Codezilla provides a command-line interface to interact with local LLMs and execute local tools.
+A modular AI-powered coding assistant CLI tool that uses Ollama for local LLM inference. Codezilla provides an interactive command-line interface with advanced tool execution capabilities and flexible UI options.
 
 ## Features
 
-- Interactive CLI interface for chatting with the LLM
-- Integration with Ollama for local LLM inference
-- Tool execution system for file operations and shell commands
-- Context management to maintain conversation history
-- Configurable settings for model, logging, and behavior
+- **Interactive CLI Interface**: Chat with local LLMs through a clean command-line interface
+- **Ollama Integration**: Uses Ollama for local LLM inference with support for multiple models
+- **Advanced Tool System**: 
+  - File operations (read, write, batch read)
+  - Shell command execution
+  - Directory listing and file search
+  - Project structure scanning
+  - Markdown analysis
+- **Flexible Tool Call Formats**: Supports XML, JSON, and bash code block formats for tool invocation
+- **Multiple UI Modes**: Choose between fancy (with colors and emoji) or minimal UI
+- **Context Management**: Maintains conversation history with token management
+- **Configurable**: Extensive configuration options via file or command-line flags
 
 ## Prerequisites
 
-- Go 1.23 or higher
-- Ollama installed and running locally
-- A compatible Ollama model (default: qwen2.5-coder:3b)
+- Go 1.22 or higher (project uses Go 1.23 features but can run with 1.22+)
+- Ollama installed and running locally (default: http://localhost:11434)
+- A compatible Ollama model installed (default: qwen2.5-coder:3b)
 
 ## Installation
 
-1. Make sure you have Go installed
-2. Clone the repository
-3. Build the application:
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/codezilla.git
+cd codezilla
+```
 
+2. Build the application:
 ```bash
 make build
 ```
 
-4. Run the application:
+This creates the binary in `build/codezilla`
 
+3. (Optional) Install to your PATH:
 ```bash
-make run
+make install
 ```
 
 ## Usage
 
-Once running, Codezilla provides an interactive CLI where you can chat with the LLM assistant. The assistant has access to various tools to help with tasks:
-
-- Reading and writing files
-- Executing shell commands
-- And more that can be added via the tool system
-
-### Commands
-
-- `/help` - Show help message
-- `/models` - List available models
-- `/model <name>` - Switch to a different model
-- `/tools` - List available tools
-- `/clear` - Clear the screen
-- `/version` - Show version information
-- `/config` - Show current configuration
-- `/config <key> <value>` - Change configuration
-- `exit` or `quit` - Exit the application
-
-## Configuration
-
-Configuration can be provided through a config file or command-line flags:
+### Running Codezilla
 
 ```bash
-./build/codezilla -config path/to/config.json -model model-name -log path/to/log.log
+# Run with default fancy UI
+./build/codezilla
+
+# Run with minimal UI
+./build/codezilla -ui minimal
+
+# Run without colors
+./build/codezilla -no-colors
+
+# Use a custom config file
+./build/codezilla -config /path/to/config.json
+
+# Show version
+./build/codezilla -version
+
+# Show help
+./build/codezilla -help
 ```
 
-### Available flags:
+### Available Commands
 
-- `-config` - Path to config file
-- `-log` - Path to log file
-- `-log-level` - Log level (debug, info, warn, error)
-- `-log-silent` - Disable console logging
-- `-model` - Model name to use
-- `-ollama-url` - Ollama API URL
+Once inside Codezilla, you can use these slash commands:
+
+- `/help` - Show available commands
+- `/exit` or `/quit` - Exit the application
+- `/clear` - Clear the screen
+- `/model [name]` - Switch to a different model or show current model
+- `/models` - List available Ollama models
+- `/context` - Show current context information
+- `/reset` - Clear conversation context
+- `/save <filename>` - Save conversation to file
+- `/load <filename>` - Load conversation from file
+- `/multiline` - Toggle multiline input mode
+- `/version` - Show version information
+
+### Configuration
+
+Codezilla can be configured through:
+
+1. **Command-line flags**:
+   - `-config string` - Path to configuration file
+   - `-ui string` - UI type: "fancy" (default) or "minimal"
+   - `-no-colors` - Disable colored output
+   - `-version` - Show version information
+   - `-help` - Show help message
+
+2. **Configuration file** (JSON format):
+```json
+{
+  "model": "qwen2.5-coder:3b",
+  "ollama_url": "http://localhost:11434/api",
+  "max_tokens": 4000,
+  "temperature": 0.7,
+  "log_file": "codezilla.log",
+  "log_level": "info",
+  "no_color": false
+}
+```
+
+Default config location: `~/.config/codezilla/config.json`
+
+## Available Tools
+
+Codezilla comes with a comprehensive set of tools that the AI assistant can use:
+
+1. **File Operations**:
+   - `fileRead` - Read contents of a file
+   - `fileWrite` - Write content to a file
+   - `fileReadBatch` - Read multiple files efficiently
+   - `listFiles` - List files in a directory
+
+2. **Command Execution**:
+   - `execute` - Execute shell commands
+
+3. **Project Analysis**:
+   - `projectScan` - Scan project structure and generate summaries
+   - `diff` - Show differences between two text inputs
+
+### Tool Call Formats
+
+The AI can invoke tools using three different formats:
+
+1. **XML Format**:
+```xml
+<tool>
+  <name>fileRead</name>
+  <params>
+    <path>/path/to/file.txt</path>
+  </params>
+</tool>
+```
+
+2. **JSON Format**:
+```json
+{
+  "tool": "fileRead",
+  "params": {
+    "path": "/path/to/file.txt"
+  }
+}
+```
+
+3. **Bash Code Blocks** (automatically converted to execute tool):
+```bash
+ls -la /tmp
+```
 
 ## Development
 
 ### Project Structure
 
-- `cmd/codezilla/` - Main application executable
-- `internal/agent/` - Agent implementation and context management
-- `internal/cli/` - Command-line interface code
-- `internal/tools/` - Tool implementations
-- `llm/ollama/` - Ollama API client
-- `pkg/logger/` - Logging utilities
-- `pkg/style/` - Terminal styling utilities
+```
+codezilla/
+├── cmd/codezilla/      # Main application entry point
+├── internal/
+│   ├── agent/          # LLM agent and tool extraction logic
+│   ├── cli/            # Command-line interface implementation
+│   ├── core/           # Core application logic
+│   ├── tools/          # Tool implementations
+│   └── ui/             # UI implementations (fancy and minimal)
+├── llm/ollama/         # Ollama API client
+├── pkg/
+│   ├── logger/         # Logging utilities
+│   └── style/          # Terminal styling and colors
+├── build/              # Build artifacts (created by make)
+├── Makefile            # Build and development commands
+├── go.mod              # Go module definition
+└── README.md           # This file
+```
 
 ### Make Commands
 
-- `make build` - Build the application
-- `make run` - Run the application
-- `make run-debug` - Run with debug logging
-- `make test` - Run tests
-- `make lint` - Run linter
-- `make fmt` - Format code
-- `make check` - Run code quality checks
-- `make clean` - Clean build artifacts
+```bash
+# Building
+make build       # Build the application to build/codezilla
+make install     # Install to $GOPATH/bin
+make clean       # Remove build artifacts
 
-## Example
+# Running
+make run         # Run with default fancy UI
+make run-minimal # Run with minimal UI
 
-```
-$ make run
+# Development
+make test        # Run all tests
+make test-coverage # Run tests with coverage report
+make fmt         # Format code
+make vet         # Run go vet
+make lint        # Run golangci-lint (if installed)
+make tidy        # Tidy and verify go modules
+make check       # Run all checks (tidy, fmt, vet, lint)
+make all         # Run checks and build
 
-=====================
-      Codezilla      
-=====================
-A CLI agent powered by Ollama
-Type '/help' to see available commands
-Current model: qwen2.5-coder:3b
-
-user> What files are in the current directory?
-
-assistant> I'll help you list the files in the current directory. Let me use a tool for that.
-
-<tool>
-{
-  "name": "execute",
-  "params": {
-    "command": "ls -la"
-  }
-}
-</tool>
-
-Here are the files in the current directory:
-
-total 24
-drwxr-xr-x  7 user user 4096 Sep 5 12:34 .
-drwxr-xr-x 32 user user 4096 Sep 5 12:30 ..
-drwxr-xr-x  2 user user 4096 Sep 5 12:34 cmd
--rw-r--r--  1 user user  268 Sep 5 12:31 go.mod
--rw-r--r--  1 user user 1825 Sep 5 12:31 go.sum
-drwxr-xr-x  3 user user 4096 Sep 5 12:32 internal
-drwxr-xr-x  3 user user 4096 Sep 5 12:32 llm
-drwxr-xr-x  2 user user 4096 Sep 5 12:33 logs
-drwxr-xr-x  3 user user 4096 Sep 5 12:33 pkg
--rw-r--r--  1 user user 2835 Sep 5 12:34 README.md
-
-user> exit
-
-Thank you for using Codezilla! Goodbye.
+# Help
+make help        # Show all available commands
 ```
 
-## License
+### Building from Source
 
-MIT License
+Requirements:
+- Go 1.22 or higher
+- Make (optional, but recommended)
+
+Without Make:
+```bash
+# Build
+go build -o build/codezilla ./cmd/codezilla
+
+# Run
+./build/codezilla
+```
+
+With Make:
+```bash
+# Build and run
+make build
+make run
+```
+
+MIT License - see LICENSE file for details
