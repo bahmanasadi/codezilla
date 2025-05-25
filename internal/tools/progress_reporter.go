@@ -75,16 +75,10 @@ func (r *TerminalProgressReporter) OnAnalysisComplete(filePath string, analysis 
 		}
 	}
 
-	if len(analysis.CodeIssues) > 0 {
+	if len(analysis.Issues) > 0 {
 		r.print("      Issues found:\n")
-		for _, issue := range analysis.CodeIssues {
-			icon := "⚠️"
-			if issue.Severity == "critical" {
-				icon = "🚨"
-			} else if issue.Severity == "high" {
-				icon = "❗"
-			}
-			r.print("        %s %s (%s): %s\n", icon, issue.Type, issue.Severity, issue.Description)
+		for _, issue := range analysis.Issues {
+			r.print("        • %s\n", issue)
 		}
 	}
 }

@@ -26,8 +26,7 @@ func (f *AnalyzerFactory) CreateAnalyzer(useLLM bool) FileAnalyzer {
 	return NewDefaultFileAnalyzer()
 }
 
-// CreateProjectScanAnalyzer creates a project scan analyzer tool
-func (f *AnalyzerFactory) CreateProjectScanAnalyzer(useLLM bool) *ProjectScanAnalyzerTool {
-	analyzer := f.CreateAnalyzer(useLLM)
-	return NewProjectScanAnalyzerTool(analyzer)
+// CreateProjectScanAnalyzer creates the enhanced project scan analyzer
+func (f *AnalyzerFactory) CreateProjectScanAnalyzer() *ProjectScanAnalyzer {
+	return NewProjectScanAnalyzer(f.llmClient, f.logger)
 }

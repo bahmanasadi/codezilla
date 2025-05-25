@@ -44,7 +44,7 @@ clean:
 
 run: build
 	@echo "Running with default fancy UI..."
-	@./$(BUILD_DIR)/$(BINARY_NAME) -model phi4-mini-reasoning:3.8b
+	@./$(BUILD_DIR)/$(BINARY_NAME) -model cogito:32b
 
 
 test:

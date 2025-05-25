@@ -51,7 +51,7 @@ func (t *ListFilesTool) ParameterSchema() JSONSchema {
 			},
 			"readContents": {
 				Type:        "boolean",
-				Description: "Whether to also read file contents (use projectScan for better performance with many files)",
+				Description: "Whether to also read file contents",
 				Default:     false,
 			},
 			"maxFileSize": {

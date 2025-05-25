@@ -69,7 +69,6 @@ func NewApp(config *cli.Config, ui ui.UI) (*App, error) {
 
 	// Initialize tool registry
 	toolRegistry := tools.NewToolRegistry()
-	registerTools(toolRegistry, llmClient, config, log)
 
 	// Create permission manager with interactive callback
 	permissionMgr := tools.NewPermissionManager(func(ctx context.Context, request tools.PermissionRequest) (tools.PermissionResponse, error) {
@@ -122,6 +121,9 @@ func NewApp(config *cli.Config, ui ui.UI) (*App, error) {
 		}
 		permissionMgr.SetDefaultPermissionLevel(toolName, level)
 	}
+
+	// Register tools after permission manager is configured
+	registerTools(toolRegistry, llmClient, config, log, permissionMgr)
 
 	// Initialize agent
 	agentConfig := &agent.Config{
@@ -374,19 +376,22 @@ func (app *App) showTools() {
 }
 
 // registerTools registers all available tools
-func registerTools(registry tools.ToolRegistry, llmClient ollama.Client, config *cli.Config, logger *logger.Logger) {
+func registerTools(registry tools.ToolRegistry, llmClient ollama.Client, config *cli.Config, logger *logger.Logger, permissionMgr tools.ToolPermissionManager) {
 	// File operation tools
 	registry.RegisterTool(tools.NewFileReadTool())
 	registry.RegisterTool(tools.NewFileWriteTool())
 	registry.RegisterTool(tools.NewListFilesTool())
-	registry.RegisterTool(tools.NewFileReadBatchTool())
-	registry.RegisterTool(tools.NewProjectScanTool())
 
 	// Create analyzer factory and register analyzer tool
 	llmAdapter := NewLLMClientAdapter(llmClient)
 	analyzerFactory := tools.NewAnalyzerFactory(llmAdapter, logger)
-	analyzer := analyzerFactory.CreateAnalyzer(config.AnalyzerSettings.UseLLM)
-	registry.RegisterTool(tools.NewProjectScanAnalyzerTool(analyzer))
+
+	// Register the analyzer (formerly V2)
+	registry.RegisterTool(analyzerFactory.CreateProjectScanAnalyzer())
+
+	// Set default permissions for project scanning tool to never ask (always allow)
+	// This tool is safe to run automatically as it only reads files without modifying anything
+	permissionMgr.SetDefaultPermissionLevel("projectScanAnalyzer", tools.NeverAsk)
 
 	registry.RegisterTool(tools.NewExecuteTool(30))
 

@@ -116,14 +116,12 @@ Codezilla comes with a comprehensive set of tools that the AI assistant can use:
 1. **File Operations**:
    - `fileRead` - Read contents of a file
    - `fileWrite` - Write content to a file
-   - `fileReadBatch` - Read multiple files efficiently
    - `listFiles` - List files in a directory
 
 2. **Command Execution**:
    - `execute` - Execute shell commands
 
 3. **Project Analysis**:
-   - `projectScan` - Scan project structure and generate summaries
    - `projectScanAnalyzer` - Deep file-by-file analysis based on user queries
    - `diff` - Show differences between two text inputs
 

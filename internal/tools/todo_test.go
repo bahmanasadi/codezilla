@@ -38,7 +38,7 @@ func TestTodoCreateTool(t *testing.T) {
 		t.Fatalf("Expected string result, got %T", result)
 	}
 
-	if !contains(resultStr, "Test Plan") {
+	if !testContains(resultStr, "Test Plan") {
 		t.Errorf("Result should contain plan name")
 	}
 }
@@ -160,7 +160,7 @@ func TestTodoAnalyzeTool(t *testing.T) {
 	}
 
 	// Should contain analysis sections
-	if !contains(resultStr, "Ready to Start") {
+	if !testContains(resultStr, "Ready to Start") {
 		t.Errorf("Analysis should contain 'Ready to Start' section")
 	}
 }
@@ -266,12 +266,12 @@ func TestTodoPersistence(t *testing.T) {
 // }
 
 // Helper function for string contains
-func contains(s, substr string) bool {
+func testContains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && stringContains(s, substr)))
+		(len(s) > 0 && len(substr) > 0 && testStringContains(s, substr)))
 }
 
-func stringContains(s, substr string) bool {
+func testStringContains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {
 			return true

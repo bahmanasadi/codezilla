@@ -88,9 +88,7 @@ When the user refers to "the project", "this project", "search", or uses relativ
 		AlwaysAskPermission: false,
 		ToolPermissions: map[string]string{
 			"fileRead":            "never_ask",
-			"fileReadBatch":       "never_ask",
 			"listFiles":           "never_ask",
-			"projectScan":         "never_ask",
 			"projectScanAnalyzer": "never_ask",
 			"fileWrite":           "always_ask",
 			"execute":             "always_ask",
