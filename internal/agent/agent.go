@@ -179,42 +179,55 @@ func (a *agent) ProcessMessage(ctx context.Context, message string) (string, err
 	for iterations < maxIterations {
 		iterations++
 
-		// Check for tool usage in response
-		toolCall, newRemainingText, hasTool := a.extractToolCall(finalResponse)
-		if !hasTool {
+		// Check for tool usage in response - extract ALL tool calls
+		toolCalls := a.extractAllToolCalls(finalResponse)
+		if len(toolCalls) == 0 {
 			a.logger.Debug("No more tool calls detected, reached final response",
 				"iterations", iterations)
 			break
 		}
 
-		remainingText = newRemainingText
-
-		a.logger.Debug("Tool call detected in iteration",
-			"iteration", iterations,
-			"tool", toolCall.ToolName,
-			"params", fmt.Sprintf("%v", toolCall.Params))
-
-		// Add tool call to context
-		a.context.AddToolCallMessage(toolCall.ToolName, toolCall.Params)
-
-		// Execute tool
-		a.logger.Debug("Executing tool", "tool", toolCall.ToolName)
-		result, err := a.ExecuteTool(ctx, toolCall.ToolName, toolCall.Params)
-
-		if err != nil {
-			a.logger.Error("Tool execution failed", "tool", toolCall.ToolName, "error", err)
-		} else {
-			a.logger.Debug("Tool execution succeeded", "tool", toolCall.ToolName)
-
-			// Auto-update todo status if we completed a task
-			if toolCall.ToolName == "todo_update" {
-				// Check if we need to analyze for next steps
-				a.checkAndSuggestNextTodoSteps(ctx)
-			}
+		// Get remaining text after extracting all tool calls
+		remainingText = finalResponse
+		for _, tc := range toolCalls {
+			remainingText = tc.remainingText
 		}
 
-		// Add tool result to context
-		a.context.AddToolResultMessage(result, err)
+		a.logger.Debug("Tool calls detected in iteration",
+			"iteration", iterations,
+			"count", len(toolCalls))
+
+		// Execute all tool calls
+		for i, tc := range toolCalls {
+			toolCall := tc.toolCall
+			a.logger.Debug("Processing tool call",
+				"index", i+1,
+				"total", len(toolCalls),
+				"tool", toolCall.ToolName,
+				"params", fmt.Sprintf("%v", toolCall.Params))
+
+			// Add tool call to context
+			a.context.AddToolCallMessage(toolCall.ToolName, toolCall.Params)
+
+			// Execute tool
+			a.logger.Debug("Executing tool", "tool", toolCall.ToolName)
+			result, err := a.ExecuteTool(ctx, toolCall.ToolName, toolCall.Params)
+
+			if err != nil {
+				a.logger.Error("Tool execution failed", "tool", toolCall.ToolName, "error", err)
+			} else {
+				a.logger.Debug("Tool execution succeeded", "tool", toolCall.ToolName)
+
+				// Auto-update todo status if we completed a task
+				if toolCall.ToolName == "todo_update" {
+					// Check if we need to analyze for next steps
+					a.checkAndSuggestNextTodoSteps(ctx)
+				}
+			}
+
+			// Add tool result to context
+			a.context.AddToolResultMessage(result, err)
+		}
 
 		// Generate follow-up response
 		a.logger.Debug("Generating follow-up response after tool execution",
@@ -407,7 +420,34 @@ type XMLParams struct {
 	XMLData []byte `xml:",innerxml"`
 }
 
-// extractToolCall extracts a tool call from the response
+// toolCallWithRemaining holds a tool call and the remaining text after extraction
+type toolCallWithRemaining struct {
+	toolCall      *ToolCall
+	remainingText string
+}
+
+// extractAllToolCalls extracts all tool calls from the response
+func (a *agent) extractAllToolCalls(response string) []toolCallWithRemaining {
+	var toolCalls []toolCallWithRemaining
+	currentText := response
+
+	// Keep extracting tool calls until none are found
+	for {
+		toolCall, remainingText, found := a.extractToolCall(currentText)
+		if !found {
+			break
+		}
+		toolCalls = append(toolCalls, toolCallWithRemaining{
+			toolCall:      toolCall,
+			remainingText: remainingText,
+		})
+		currentText = remainingText
+	}
+
+	return toolCalls
+}
+
+// extractToolCall extracts a single tool call from the response
 func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 	// Log for debugging purposes
 	a.logger.Debug("Checking for tool calls in response", "responseLength", len(response))
@@ -415,72 +455,139 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 	// Add more debug logging when fixing tool detection
 	a.logger.Debug("Full response for tool detection", "response", response)
 
-	// Try JSON format first (most structured)
+	// Define all patterns
 	jsonPattern := regexp.MustCompile("(?s)```json\\s*\\n(.*?)\\n?```")
-	jsonMatches := jsonPattern.FindStringSubmatch(response)
-	if len(jsonMatches) >= 2 {
-		jsonContent := strings.TrimSpace(jsonMatches[1])
-		a.logger.Debug("Found JSON code block", "content", jsonContent)
+	bashPattern := regexp.MustCompile("(?s)```(bash|sh|shell|terminal|console)\\s*\\n(.*?)\\n?```")
+	xmlPattern := regexp.MustCompile(`(?s)<tool>[\s\n]*(.*?)[\s\n]*</tool>`)
 
-		// Try to parse as JSON tool call
-		var jsonToolCall struct {
-			Tool   string                 `json:"tool"`
-			Name   string                 `json:"name"` // Alternative field name
-			Params map[string]interface{} `json:"params"`
+	// Find the earliest match among all patterns
+	type match struct {
+		start      int
+		end        int
+		matchType  string
+		submatches []string
+	}
+
+	var earliestMatch *match
+
+	// Check JSON pattern
+	if loc := jsonPattern.FindStringSubmatchIndex(response); loc != nil && len(loc) >= 4 {
+		earliestMatch = &match{
+			start:      loc[0],
+			end:        loc[1],
+			matchType:  "json",
+			submatches: jsonPattern.FindStringSubmatch(response),
 		}
+	}
 
-		if err := json.Unmarshal([]byte(jsonContent), &jsonToolCall); err == nil {
-			toolName := jsonToolCall.Tool
-			if toolName == "" {
-				toolName = jsonToolCall.Name
+	// Check bash pattern
+	if loc := bashPattern.FindStringSubmatchIndex(response); loc != nil && len(loc) >= 6 {
+		if earliestMatch == nil || loc[0] < earliestMatch.start {
+			earliestMatch = &match{
+				start:      loc[0],
+				end:        loc[1],
+				matchType:  "bash",
+				submatches: bashPattern.FindStringSubmatch(response),
+			}
+		}
+	}
+
+	// Check XML pattern
+	if loc := xmlPattern.FindStringSubmatchIndex(response); loc != nil && len(loc) >= 2 {
+		if earliestMatch == nil || loc[0] < earliestMatch.start {
+			earliestMatch = &match{
+				start:      loc[0],
+				end:        loc[1],
+				matchType:  "xml",
+				submatches: xmlPattern.FindStringSubmatch(response),
+			}
+		}
+	}
+
+	// If no match found, return
+	if earliestMatch == nil {
+		a.logger.Debug("No tool call patterns found in response")
+		return nil, response, false
+	}
+
+	// Process the earliest match based on its type
+	var result *ToolCall
+	remainingText := response[:earliestMatch.start] + response[earliestMatch.end:]
+	remainingText = strings.TrimSpace(remainingText)
+
+	switch earliestMatch.matchType {
+	case "json":
+		if len(earliestMatch.submatches) >= 2 {
+			jsonContent := strings.TrimSpace(earliestMatch.submatches[1])
+			a.logger.Debug("Found JSON code block", "content", jsonContent)
+
+			// Try to parse as JSON tool call
+			var jsonToolCall struct {
+				Tool   string                 `json:"tool"`
+				Name   string                 `json:"name"` // Alternative field name
+				Params map[string]interface{} `json:"params"`
 			}
 
-			if toolName != "" && jsonToolCall.Params != nil {
-				a.logger.Debug("Successfully parsed JSON tool call", "toolName", toolName)
-
-				result := &ToolCall{
-					ToolName: toolName,
-					Params:   jsonToolCall.Params,
+			if err := json.Unmarshal([]byte(jsonContent), &jsonToolCall); err == nil {
+				toolName := jsonToolCall.Tool
+				if toolName == "" {
+					toolName = jsonToolCall.Name
 				}
 
-				// Remove the JSON block from response
-				loc := jsonPattern.FindStringIndex(response)
-				remainingText := response[:loc[0]] + response[loc[1]:]
-				remainingText = strings.TrimSpace(remainingText)
+				if toolName != "" && jsonToolCall.Params != nil {
+					a.logger.Debug("Successfully parsed JSON tool call", "toolName", toolName)
 
-				return result, remainingText, true
+					result = &ToolCall{
+						ToolName: toolName,
+						Params:   jsonToolCall.Params,
+					}
+
+					return result, remainingText, true
+				}
 			}
 		}
-	}
 
-	// Check for bash/shell code blocks
-	bashPattern := regexp.MustCompile("(?s)```(bash|sh|shell|terminal|console)\\s*\\n(.*?)\\n?```")
-	bashMatches := bashPattern.FindStringSubmatch(response)
-	if len(bashMatches) >= 3 {
-		command := strings.TrimSpace(bashMatches[2])
-		a.logger.Debug("Found bash code block", "language", bashMatches[1], "command", command)
+	case "bash":
+		if len(earliestMatch.submatches) >= 3 {
+			command := strings.TrimSpace(earliestMatch.submatches[2])
+			a.logger.Debug("Found bash code block", "language", earliestMatch.submatches[1], "command", command)
 
-		// Create tool call for bash execution
-		result := &ToolCall{
-			ToolName: "execute",
-			Params: map[string]interface{}{
-				"command": command,
-			},
+			// Create tool call for bash execution
+			result = &ToolCall{
+				ToolName: "execute",
+				Params: map[string]interface{}{
+					"command": command,
+				},
+			}
+
+			return result, remainingText, true
 		}
 
-		// Remove the bash block from response
-		loc := bashPattern.FindStringIndex(response)
-		remainingText := response[:loc[0]] + response[loc[1]:]
-		remainingText = strings.TrimSpace(remainingText)
+	case "xml":
+		// Extract and process the XML tool call
+		toolXML := earliestMatch.submatches[0]
+		a.logger.Debug("Found potential tool call", "xml", toolXML)
 
-		return result, remainingText, true
+		// Continue with XML processing below
 	}
 
-	// Pattern to match <tool>...</tool> sections, more flexible with whitespace and formatting
-	pattern := regexp.MustCompile(`(?s)<tool>[\s\n]*(.*?)[\s\n]*</tool>`)
+	// If we get here and it's not XML, something went wrong
+	if earliestMatch.matchType != "xml" {
+		return nil, response, false
+	}
 
-	// Find the first match
-	matches := pattern.FindStringSubmatch(response)
+	// For XML processing, we already have the match from earliestMatch
+	var matches []string
+	var pattern *regexp.Regexp
+
+	if earliestMatch.matchType == "xml" {
+		matches = earliestMatch.submatches
+		pattern = xmlPattern
+	} else {
+		// Should not reach here
+		return nil, response, false
+	}
+
 	if len(matches) < 2 {
 		// Try alternative pattern with backticks that might be used by LLMs
 		altPattern := regexp.MustCompile("(?s)```xml[\\s\\n]*(.*?)[\\s\\n]*```")
@@ -559,10 +666,7 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 			"toolName", result.ToolName,
 			"paramsCount", len(result.Params))
 
-		// Remove the tool section from the response
-		remainingText := pattern.ReplaceAllString(response, "")
-		remainingText = strings.TrimSpace(remainingText)
-
+		// The tool section has already been removed from remainingText above
 		return result, remainingText, true
 	}
 
@@ -600,7 +704,7 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 	}
 
 	// Create the ToolCall object
-	result := &ToolCall{
+	result = &ToolCall{
 		ToolName: toolName,
 		Params:   params,
 	}
@@ -609,10 +713,7 @@ func (a *agent) extractToolCall(response string) (*ToolCall, string, bool) {
 		"toolName", result.ToolName,
 		"paramsCount", len(result.Params))
 
-	// Remove the tool section from the response
-	remainingText := pattern.ReplaceAllString(response, "")
-	remainingText = strings.TrimSpace(remainingText)
-
+	// The tool section has already been removed from remainingText above
 	return result, remainingText, true
 }
 
